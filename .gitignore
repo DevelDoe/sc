@@ -1,0 +1,85 @@
+# ----------------------------------------
+# Windows System Files
+# ----------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ----------------------------------------
+# IDE and Editor Directories/Files
+# ----------------------------------------
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (CLion, etc.)
+.idea/
+
+# Visual Studio (if applicable)
+*.suo
+*.user
+*.ncb
+*.cache
+
+# Code::Blocks
+*.cbp
+*.depend
+*.layout
+
+# Dev-C++
+*.dep
+*.mak
+
+# ----------------------------------------
+# Build Artifacts and Intermediate Files
+# ----------------------------------------
+# Object files, libraries, and executables
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+
+# Debug and other intermediate files
+*.pdb
+*.idb
+*.ilk
+*.exp
+
+# ----------------------------------------
+# Build and Output Directories
+# ----------------------------------------
+build/
+bin/
+Debug/
+Release/
+out/
+
+# ----------------------------------------
+# CMake Generated Files
+# ----------------------------------------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# ----------------------------------------
+# Temporary and Backup Files
+# ----------------------------------------
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# ----------------------------------------
+# Log Files
+# ----------------------------------------
+*.log
