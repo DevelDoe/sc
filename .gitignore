@@ -78,6 +78,7 @@ Makefile
 *.bak
 *.swp
 *.swo
+dump*
 
 # ----------------------------------------
 # Log Files
