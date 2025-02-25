@@ -2,10 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <microhttpd.h>
-#include <json-c/json.h>
 #include <ctype.h>
+#include <cjson/cJSON.h>
 
 #define PORT 8080
+
+// Function prototype for start_http_server
+void start_http_server(); // <-- Add this lin
 
 // Global variable to hold the JSON data (updated via /update endpoint)
 static char *global_json_data = NULL;
@@ -17,20 +20,31 @@ struct connection_info_struct
     size_t post_data_size;
 };
 
-// Simple function to remove a UTF-8 BOM from the start of a string.
+// Function to remove BOM from JSON data
 void remove_bom(char *data)
 {
-    if (!data)
-        return;
-    if ((unsigned char)data[0] == 0xEF &&
+    if (data && (unsigned char)data[0] == 0xEF &&
         (unsigned char)data[1] == 0xBB &&
         (unsigned char)data[2] == 0xBF)
     {
-        size_t len = strlen(data);
-        // Shift the entire string left by 3 bytes, including the null terminator.
-        memmove(data, data + 3, len - 2);
-        printf("BOM removed.\n");
+        memmove(data, data + 3, strlen(data) - 2);
     }
+}
+
+// Find symbol in the data set
+cJSON *get_symbol_data(cJSON *json_obj, const char *symbol)
+{
+    size_t n = cJSON_GetArraySize(json_obj);
+    for (size_t i = 0; i < n; i++)
+    {
+        cJSON *obj = cJSON_GetArrayItem(json_obj, i);
+        cJSON *symbol_obj = cJSON_GetObjectItem(obj, "symbol");
+        if (cJSON_IsString(symbol_obj) && strcmp(symbol_obj->valuestring, symbol) == 0)
+        {
+            return obj;
+        }
+    }
+    return NULL;
 }
 
 // Endpoint to update the JSON stream (expects POST data)
@@ -56,7 +70,6 @@ static enum MHD_Result handle_update(void *cls, struct MHD_Connection *connectio
     {
         if (*upload_data_size != 0)
         {
-            // Log each received chunk's size
             printf("Receiving POST chunk of size %zu bytes\n", *upload_data_size);
             char *new_data = realloc(con_info->post_data, con_info->post_data_size + *upload_data_size + 1);
             if (new_data == NULL)
@@ -70,36 +83,30 @@ static enum MHD_Result handle_update(void *cls, struct MHD_Connection *connectio
         }
         else
         {
-            // All POST data received
             if (global_json_data)
                 free(global_json_data);
             global_json_data = strdup(con_info->post_data ? con_info->post_data : "");
 
-            // Remove BOM from the JSON data, if present.
             remove_bom(global_json_data);
+            // printf("[DEBUG] Stored JSON after BOM removal: %s\n", global_json_data);
 
-            printf("Finished receiving POST data.\n");
-            // Count number of objects in the JSON array
             int object_count = 0;
-            struct json_object *json_obj = json_tokener_parse(global_json_data);
-            if (json_obj && json_object_get_type(json_obj) == json_type_array)
+            cJSON *json_obj = cJSON_Parse(global_json_data);
+            if (json_obj && cJSON_IsArray(json_obj))
             {
-                object_count = json_object_array_length(json_obj);
+                object_count = cJSON_GetArraySize(json_obj);
             }
-            if (json_obj)
-                json_object_put(json_obj);
+            cJSON_Delete(json_obj);
 
-            printf("Received update with %d objects.\n", object_count);
+            // printf("Received update with %d objects.\n", object_count);
 
             free(con_info->post_data);
             free(con_info);
             *con_cls = NULL;
 
-            // Build response JSON with message and object count
             char response_buf[256];
             snprintf(response_buf, sizeof(response_buf),
                      "{\"message\": \"Update successful\", \"object_count\": %d}", object_count);
-            printf("Sending response: %s\n", response_buf);
             struct MHD_Response *response = MHD_create_response_from_buffer(strlen(response_buf),
                                                                             response_buf,
                                                                             MHD_RESPMEM_MUST_COPY);
@@ -110,24 +117,6 @@ static enum MHD_Result handle_update(void *cls, struct MHD_Connection *connectio
         }
     }
     return MHD_NO;
-}
-
-// Find symbol in the data set
-struct json_object *get_symbol_data(struct json_object *json_obj, const char *symbol)
-{
-    size_t n = json_object_array_length(json_obj);
-    for (size_t i = 0; i < n; i++)
-    {
-        struct json_object *obj = json_object_array_get_idx(json_obj, i);
-        struct json_object *symbol_obj = json_object_object_get(obj, "symbol");
-        const char *json_symbol = json_object_get_string(symbol_obj);
-        printf("Comparing: '%s' with '%s'\n", json_symbol, symbol);
-        if (symbol_obj && strcmp(json_symbol, symbol) == 0)
-        {
-            return obj;
-        }
-    }
-    return NULL;
 }
 
 // Handler for GET requests on /symbols
@@ -142,72 +131,46 @@ static enum MHD_Result handle_symbols(void *cls, struct MHD_Connection *connecti
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(error_message),
                                                                         (void *)error_message,
                                                                         MHD_RESPMEM_PERSISTENT);
-        MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
-        MHD_destroy_response(response);
-        return ret;
+        return MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
     }
 
-    // Parse the stored JSON data
-    struct json_object *parsed_json = json_tokener_parse(global_json_data);
+    cJSON *parsed_json = cJSON_Parse(global_json_data);
     if (!parsed_json)
     {
         const char *error_message = "{\"error\": \"Failed to parse JSON data.\"}";
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(error_message),
                                                                         (void *)error_message,
                                                                         MHD_RESPMEM_PERSISTENT);
-        MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
-        MHD_destroy_response(response);
-        return ret;
+        return MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
     }
 
-    // Continue with the existing logic for processing symbols...
-    struct json_object *symbols_set = json_object_new_array();
-    size_t n = json_object_array_length(parsed_json);
+    cJSON *symbols_set = cJSON_CreateArray();
+    size_t n = cJSON_GetArraySize(parsed_json);
     for (size_t i = 0; i < n; i++)
     {
-        struct json_object *obj = json_object_array_get_idx(parsed_json, i);
-        struct json_object *symbol_obj = json_object_object_get(obj, "symbol");
-        if (symbol_obj)
+        cJSON *obj = cJSON_GetArrayItem(parsed_json, i);
+        cJSON *symbol_obj = cJSON_GetObjectItem(obj, "symbol");
+        if (cJSON_IsString(symbol_obj))
         {
-            const char *symbol = json_object_get_string(symbol_obj);
-
-            // Check if the symbol is already in the array
-            int found = 0;
-            size_t symbols_count = json_object_array_length(symbols_set);
-            for (size_t j = 0; j < symbols_count; j++)
-            {
-                const char *existing_symbol = json_object_get_string(json_object_array_get_idx(symbols_set, j));
-                if (strcmp(existing_symbol, symbol) == 0)
-                {
-                    found = 1;
-                    break;
-                }
-            }
-            // Add the symbol to the list if it's not already there
-            if (!found)
-            {
-                json_object_array_add(symbols_set, json_object_new_string(symbol));
-            }
+            cJSON_AddItemToArray(symbols_set, cJSON_CreateString(symbol_obj->valuestring));
         }
     }
 
-    // Build response JSON with length and symbols list
-    struct json_object *response_json = json_object_new_object();
-    json_object_object_add(response_json, "length", json_object_new_int(json_object_array_length(symbols_set)));
-    json_object_object_add(response_json, "symbols", symbols_set);
+    cJSON *response_json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(response_json, "length", cJSON_GetArraySize(symbols_set));
+    cJSON_AddItemToObject(response_json, "symbols", symbols_set);
 
-    // Convert the response JSON object to a string
-    const char *response_data = json_object_to_json_string(response_json);
+    char *response_data = cJSON_Print(response_json);
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(response_data),
-                                                                    (void *)response_data,
-                                                                    MHD_RESPMEM_PERSISTENT);
+                                                                    response_data,
+                                                                    MHD_RESPMEM_MUST_COPY);
     MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
+
     enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
-    json_object_put(parsed_json);
-    json_object_put(response_json); // Free response JSON object
+    cJSON_Delete(parsed_json);
+    cJSON_Delete(response_json);
+    free(response_data);
     return ret;
 }
 
@@ -217,7 +180,6 @@ static enum MHD_Result handle_symbol_meta(void *cls, struct MHD_Connection *conn
                                           const char *version, const char *upload_data,
                                           size_t *upload_data_size, void **con_cls)
 {
-    // Expect URL pattern: /meta/<symbol>
     const char *symbol = url + strlen("/meta/");
     printf("Received GET request for symbol meta: %s\n", symbol);
 
@@ -227,74 +189,45 @@ static enum MHD_Result handle_symbol_meta(void *cls, struct MHD_Connection *conn
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(error_message),
                                                                         (void *)error_message,
                                                                         MHD_RESPMEM_PERSISTENT);
-        MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
-        MHD_destroy_response(response);
-        return ret;
+        return MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
     }
 
-    // Parse the stored JSON data
-    struct json_object *parsed_json = json_tokener_parse(global_json_data);
+    cJSON *parsed_json = cJSON_Parse(global_json_data);
     if (!parsed_json)
     {
         const char *error_message = "{\"error\": \"Failed to parse JSON data.\"}";
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(error_message),
                                                                         (void *)error_message,
                                                                         MHD_RESPMEM_PERSISTENT);
-        MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
-        MHD_destroy_response(response);
-        return ret;
+        return MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
     }
 
-    // Verify that the data is an array and search for the symbol
-    if (json_object_get_type(parsed_json) != json_type_array)
-    {
-        const char *error_message = "{\"error\": \"Data format error. Expected JSON array.\"}";
-        struct MHD_Response *response = MHD_create_response_from_buffer(strlen(error_message),
-                                                                        (void *)error_message,
-                                                                        MHD_RESPMEM_PERSISTENT);
-        MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, response);
-        MHD_destroy_response(response);
-        json_object_put(parsed_json);
-        return ret;
-    }
-
-    struct json_object *symbol_obj = get_symbol_data(parsed_json, symbol);
+    cJSON *symbol_obj = get_symbol_data(parsed_json, symbol);
     if (!symbol_obj)
     {
-        printf("Symbol '%s' not found.\n", symbol);
         const char *error_message = "{\"error\": \"Symbol not found.\"}";
         struct MHD_Response *response = MHD_create_response_from_buffer(strlen(error_message),
                                                                         (void *)error_message,
                                                                         MHD_RESPMEM_PERSISTENT);
-        MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-        enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
-        MHD_destroy_response(response);
-        json_object_put(parsed_json);
-        return ret;
+        return MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, response);
     }
 
-    const char *symbol_data = json_object_to_json_string(symbol_obj);
-    printf("Found symbol data: %s\n", symbol_data);
-    // Use MUST_COPY so that the response is independent of the internal JSON memory.
+    char *symbol_data = cJSON_Print(symbol_obj);
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(symbol_data),
-                                                                    (void *)symbol_data,
+                                                                    symbol_data,
                                                                     MHD_RESPMEM_MUST_COPY);
     MHD_add_response_header(response, "Content-Type", "application/json; charset=UTF-8");
-    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
-    MHD_destroy_response(response);
-    json_object_put(parsed_json);
-    return ret;
+
+    return MHD_queue_response(connection, MHD_HTTP_OK, response);
 }
 
-// Main router
 static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *connection,
                                             const char *url, const char *method,
                                             const char *version, const char *upload_data,
                                             size_t *upload_data_size, void **con_cls)
 {
+    printf("Received request: Method=%s, URL=%s\n", method, url);
+
     // Route POST requests to /update
     if (strncmp(url, "/update", 7) == 0 && strcmp(method, "POST") == 0)
     {
@@ -322,6 +255,8 @@ static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *co
         MHD_destroy_response(response);
         return ret;
     }
+
+    printf("Unknown request: Method=%s, URL=%s\n", method, url);
     return MHD_NO;
 }
 
@@ -341,7 +276,7 @@ void start_http_server()
     MHD_stop_daemon(daemon);
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     start_http_server();
     return 0;
