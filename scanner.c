@@ -1,487 +1,467 @@
-#include <math.h> // Now first include
+#include <json-c/json.h>
 #include <libwebsockets.h>
-#include <string.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <curl/curl.h>
-#include <json-c/json.h>
+#include <string.h>
 #include <windows.h>
-#include <time.h>
 
-// Function prototypes
-int parse_symbols(const char *response_data);
-void refresh_symbols();
-
+// Constants
 #define DEBUG_MODE 0
 #define MAX_TRADES 300
-#define MAX_SYMBOLS 50
-#define MOVE 1
-#define DEBOUNCE_TIME 3000 // 3 seconds in milliseconds
-#define REFRESH_INTERVAL 60000 // 3 minutes in milliseconds
-#ifdef __MINGW32__
-    double
-    fabs(double x);
-#endif
+#define MAX_SYMBOLS 50      // Maximum number of symbols to track
+#define MOVE 0.01           // 1% price movement
+#define DEBOUNCE_TIME 3000  // 3 seconds in milliseconds
 
-typedef struct
-{
-    double price;
-} Trade;
-
-extern Trade trade_data[MAX_SYMBOLS][MAX_TRADES]; // ✅ Allow access to global trade data
-extern int trade_index[MAX_SYMBOLS];              // ✅ Allow access to global trade index
-extern unsigned long last_alert_time[MAX_SYMBOLS]; // ✅ Allow access to alert timers
-unsigned long last_alert_time[MAX_SYMBOLS] = {0}; // ✅ Define the variable
-double last_alert_price[MAX_SYMBOLS] = {0}; // ✅ Track last alerted price
-
-
-
-
-
-#define LOG_DEBUG(fmt, ...)             \
-    do                                  \
-    {                                   \
-        if (DEBUG_MODE)                 \
-            printf(fmt, ##__VA_ARGS__); \
-    } while (0)
-
-
-
-void remove_bom(char *data)
-{
-    if (!data || strlen(data) < 3)
-        return;
-
-    if ((unsigned char)data[0] == 0xEF &&
-        (unsigned char)data[1] == 0xBB &&
-        (unsigned char)data[2] == 0xBF)
-    {
-        size_t len = strlen(data);
-        memmove(data, data + 3, len - 2); // Shift left by 3 bytes
-        printf("[DEBUG] BOM removed from JSON response.\n");
-    }
-}
-
-// Structure to track subscription progress
-typedef struct
-{
-    int sub_index;
-} per_session_data;
-
+// Globals
+// Global WebSocket connection for local server
+struct lws *wsi_local = NULL;
+struct lws *wsi_finnhub = NULL;
 char **symbols = NULL;
 int num_symbols = 0;
 
-size_t write_callback(void *ptr, size_t size, size_t nmemb, void *userdata)
-{
-    char *data = (char *)userdata;
-    size_t total_size = size * nmemb;
+#define LOG_DEBUG(fmt, ...)                         \
+    do {                                            \
+        if (DEBUG_MODE) printf(fmt, ##__VA_ARGS__); \
+    } while (0)
 
-    size_t current_length = strlen(data);
-    size_t available_space = 32768 - current_length - 1; // -1 for null terminator
-
-    if (total_size > available_space)
-    {
-        fprintf(stderr, "[ERROR] Response buffer full, truncating data\n");
-        total_size = available_space;
-    }
-
-    strncat(data, (char *)ptr, total_size);
-    return total_size;
-}
-
-// Fetch symbols from HTTP endpoint
-int fetch_symbols(const char *url, char *response_data, size_t buffer_size)
-{
-    CURL *curl = curl_easy_init();
-    if (!curl)
-    {
-        fprintf(stderr, "[ERROR] Failed to initialize cURL\n");
-        return -1;
-    }
-
-    LOG_DEBUG("[DEBUG] Fetching symbols from: %s\n", url);
-
-    memset(response_data, 0, buffer_size); // ✅ Ensure buffer is empty before writing
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response_data);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK)
-    {
-        fprintf(stderr, "[ERROR] cURL request failed: %s\n", curl_easy_strerror(res));
-        return -1;
-    }
-
-    // ✅ Remove BOM if present
-    remove_bom(response_data);
-
-    return 0;
-}
-
-void refresh_symbols()
-{
-    char response[32768] = {0}; // ✅ Ensure buffer is large enough
-
-    if (fetch_symbols("http://localhost:8080/symbols", response, sizeof(response)) == 0)
-    {
-        // ✅ Free previous symbol list before replacing it
-        for (int i = 0; i < num_symbols; i++)
+// Free the symbols array
+void free_symbols() {
+    if (symbols) {
+        for (int i = 0; i < num_symbols; i++) {
             free(symbols[i]);
+        }
         free(symbols);
-
-        if (parse_symbols(response) == 0)
-        {
-            printf("[INFO] Symbol list refreshed successfully!\n");
-
-            // ✅ CLEAR OLD TRADE DATA TO AVOID BAD ALERTS
-            memset(trade_data, 0, sizeof(trade_data));   // Reset prices
-            memset(trade_index, 0, sizeof(trade_index)); // Reset trade history index
-            memset(last_alert_time, 0, sizeof(last_alert_time)); // Reset debounce timers
-        }
-        else
-        {
-            printf("[ERROR] Failed to parse new symbol list.\n");
-        }
-    }
-    else
-    {
-        printf("[ERROR] Failed to fetch new symbols from server.\n");
+        symbols = NULL;
+        num_symbols = 0;
     }
 }
 
-
-
-// Parse symbols from JSON response
-int parse_symbols(const char *response_data)
-{
-    LOG_DEBUG("[DEBUG] Parsing response data...\n");
-
-    struct json_object *parsed_json = json_tokener_parse(response_data);
-    if (!parsed_json)
-    {
-        fprintf(stderr, "[ERROR] Failed to parse JSON response\n");
-        return -1;
-    }
-
-    struct json_object *symbols_json;
-    if (!json_object_object_get_ex(parsed_json, "symbols", &symbols_json))
-    {
-        fprintf(stderr, "[ERROR] JSON does not contain 'symbols' key\n");
-        json_object_put(parsed_json);
-        return -1;
-    }
-
-    num_symbols = json_object_array_length(symbols_json);
-    LOG_DEBUG("[DEBUG] Found %d symbols in response\n", num_symbols);
-
-    num_symbols = num_symbols > MAX_SYMBOLS ? MAX_SYMBOLS : num_symbols;
-
-    symbols = malloc(num_symbols * sizeof(char *));
-    if (!symbols)
-    {
-        fprintf(stderr, "[ERROR] Failed to allocate memory for symbols\n");
-        json_object_put(parsed_json);
-        return -1;
-    }
-
-    for (size_t i = 0; i < num_symbols; i++)
-    {
-        struct json_object *symbol_json = json_object_array_get_idx(symbols_json, i);
-        symbols[i] = strdup(json_object_get_string(symbol_json));
-        if (!symbols[i])
-        {
-            fprintf(stderr, "[ERROR] Failed to allocate memory for symbol %zu\n", i);
-            json_object_put(parsed_json);
-            return -1;
-        }
-
-        LOG_DEBUG("[DEBUG] Parsed symbol: %s\n", symbols[i]);
-    }
-
-    json_object_put(parsed_json);
-    return 0;
-}
-
-
+// Trade data structure
+// Trade data structure
+typedef struct {
+    double price;
+    int volume;  // ✅ Add this line to store volume
+    unsigned long timestamp;
+} Trade;
 
 Trade trade_data[MAX_SYMBOLS][MAX_TRADES] = {0};
 int trade_index[MAX_SYMBOLS] = {0};
+unsigned long last_alert_time[MAX_SYMBOLS] = {0};
+double last_checked_price[MAX_SYMBOLS] = {0};
 
-void store_trade(int symbol_index, double price)
-{
-    if (DEBUG_MODE)
-    {
-        LOG_DEBUG("[DEBUG] Storing %s: %.2f at %d\n",
-                  symbols[symbol_index], price, trade_index[symbol_index]);
-    }
-    trade_data[symbol_index][trade_index[symbol_index]].price = price;
-    trade_index[symbol_index] = (trade_index[symbol_index] + 1) % MAX_TRADES;
-}
+// Per-session data for Finnhub
+typedef struct {
+    int sub_index;
+} per_session_data;
 
-int get_symbol_index(const char *symbol)
-{
-    for (int i = 0; i < num_symbols; i++)
-    {
-        if (strcmp(symbols[i], symbol) == 0)
-            return i;
-    }
-    return -1;
-}
-
-void check_price_movement(int symbol_index)
-{
-    if (trade_index[symbol_index] < 2)
+// Function to store trade data
+void store_trade(int symbol_index, double price, int volume) {
+    if (symbol_index < 0 || symbol_index >= MAX_SYMBOLS) {
+        printf("[ERROR] store_trade(): Invalid symbol_index = %d\n", symbol_index);
         return;
+    }
 
-    int old_idx = (trade_index[symbol_index] - 2) % MAX_TRADES;
-    int new_idx = (trade_index[symbol_index] - 1) % MAX_TRADES;
+    unsigned long timestamp = (unsigned long)(time(NULL));
+    int idx = trade_index[symbol_index];
 
-    double old_price = trade_data[symbol_index][old_idx].price;
-    double new_price = trade_data[symbol_index][new_idx].price;
-
-    if (old_price <= 0)
+    if (idx < 0 || idx >= MAX_TRADES) {
+        printf("[ERROR] store_trade(): Invalid trade_index[%d] = %d\n", symbol_index, idx);
         return;
+    }
 
-    double change = ((new_price - old_price) / old_price) * 100.0;
+    LOG_DEBUG("[DEBUG] Storing trade | Symbol: %s | Price: %.4f | Volume: %d | Timestamp: %lu | Index: %d\n", symbols[symbol_index], price, volume, timestamp, idx);
 
-    // ✅ Ensure only positive percentage changes trigger an alert
-    if (change >= MOVE) // Adjust threshold as needed
-    {
-        unsigned long current_time = (unsigned long)(clock() * 1000 / CLOCKS_PER_SEC);
+    // Store new trade
+    trade_data[symbol_index][idx].price = price;
+    trade_data[symbol_index][idx].volume = volume;  // Store volume
+    trade_data[symbol_index][idx].timestamp = timestamp;
 
-        // ✅ Check debounce time before alerting AND ensure the price is still rising
-        if (current_time - last_alert_time[symbol_index] >= DEBOUNCE_TIME && new_price > last_alert_price[symbol_index])
-        {
-            printf("ALERT: %s increased %.2f%% | Current Price: %.2f\n",
-                   symbols[symbol_index], change, new_price);
-
-            Beep(750, 100);
-
-            // ✅ Update last alert time & price
-            last_alert_time[symbol_index] = current_time;
-            last_alert_price[symbol_index] = new_price;
-        }
+    // Move index only if last trade was from a different second
+    int prev_idx = (idx - 1 + MAX_TRADES) % MAX_TRADES;
+    if (trade_data[symbol_index][prev_idx].timestamp != timestamp) {
+        trade_index[symbol_index] = (idx + 1) % MAX_TRADES;
     }
 }
 
-// WebSocket callback
-static int callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
-                       void *user, void *in, size_t len)
-{
-    per_session_data *pss = (per_session_data *)user;
+void send_alert_to_server(int is_increase, double percentage, double price, int volume, const char *symbol) {
+    if (!wsi_local) {
+        printf("[ERROR] WebSocket to local server is not connected\n");
+        return;
+    }
 
-    switch (reason)
-    {
-    case LWS_CALLBACK_CLIENT_ESTABLISHED:
-        printf("Connected!\n");
-        if (!pss)
-            pss = (per_session_data *)calloc(1, sizeof(per_session_data)); // Ensure it's initialized
-        pss->sub_index = 0;
-        lws_callback_on_writable(wsi);
-        break;
+    if (!wsi_local || lws_partial_buffered(wsi_local)) {
+        printf("[ERROR] WebSocket is not writable. Skipping alert send.\n");
+        return;
+    }
 
-    case LWS_CALLBACK_CLIENT_WRITEABLE:
-        if (pss->sub_index < MAX_SYMBOLS && pss->sub_index < num_symbols) // ✅ Enforce limit
-        {
-            unsigned char buf[LWS_PRE + 256];
-            unsigned char *p = &buf[LWS_PRE];
+    // Create JSON alert message
+    struct json_object *alert_json = json_object_new_object();
+    json_object_object_add(alert_json, "client_id", json_object_new_string("scanner"));
 
-            int n = snprintf((char *)p, 256,
-                             "{\"type\":\"subscribe\",\"symbol\":\"%s\"}",
-                             symbols[pss->sub_index]);
+    // Ensure symbol is valid
+    if (!symbol) {
+        printf("[ERROR] send_alert_to_server(): NULL symbol\n");
+        json_object_put(alert_json);
+        return;
+    }
 
-            lws_write(wsi, p, n, LWS_WRITE_TEXT);
-            printf("Subscribed to: %s (%d/%d)\n", symbols[pss->sub_index], pss->sub_index + 1, MAX_SYMBOLS);
+    // Create the "data" object
+    struct json_object *data_json = json_object_new_object();
+    json_object_object_add(data_json, "symbol", json_object_new_string(symbol));
+    json_object_object_add(data_json, "direction", json_object_new_string(is_increase ? "UP" : "DOWN"));
+    json_object_object_add(data_json, "change_percent", json_object_new_double(percentage));
+    json_object_object_add(data_json, "current_price", json_object_new_double(price));
+    json_object_object_add(data_json, "trade_volume", json_object_new_int(volume));
 
-            pss->sub_index++;
-            if (pss->sub_index < MAX_SYMBOLS && pss->sub_index < num_symbols)
-            {
-                lws_callback_on_writable(wsi);
+    // Add "data" object to main message
+    json_object_object_add(alert_json, "data", data_json);
+
+    // Convert JSON to string
+    const char *json_str = json_object_to_json_string(alert_json);
+
+    // Allocate buffer with LWS_PRE padding
+    unsigned char buf[LWS_PRE + 512];
+    unsigned char *p = &buf[LWS_PRE];
+    size_t msg_len = strlen(json_str);
+    memcpy(p, json_str, msg_len);
+
+    if (lws_write(wsi_local, p, msg_len, LWS_WRITE_TEXT) < 0) {
+        printf("[ERROR] Failed to send WebSocket message.\n");
+    } else {
+        printf("[SCANNER] Sent alert: %s\n", json_str);
+    }
+
+    // Cleanup JSON object
+    json_object_put(alert_json);
+}
+
+DWORD WINAPI monitor_thread(LPVOID lpParam) {
+    while (1) {
+        Sleep(1000);  // Check every second
+
+        for (int symbol_index = 0; symbol_index < num_symbols; symbol_index++) {
+            if (symbol_index < 0 || symbol_index >= MAX_SYMBOLS) {
+                printf("[ERROR] monitor_thread(): Invalid symbol_index = %d\n", symbol_index);
+                continue;
             }
+
+            int last_trade_idx = (trade_index[symbol_index] - 1 + MAX_TRADES) % MAX_TRADES;
+            if (last_trade_idx < 0 || last_trade_idx >= MAX_TRADES) {
+                printf("[ERROR] monitor_thread(): Invalid last_trade_idx = %d for symbol %d\n", last_trade_idx, symbol_index);
+                continue;
+            }
+
+            double current_price = trade_data[symbol_index][last_trade_idx].price;
+            int current_volume = trade_data[symbol_index][last_trade_idx].volume;  // Get volume
+
+            if (current_price <= 0) continue;
+
+            double old_price = last_checked_price[symbol_index];
+
+            if (old_price == 0) {
+                last_checked_price[symbol_index] = current_price;
+                continue;
+            }
+
+            double change = ((current_price - old_price) / old_price) * 100.0;
+            unsigned long current_time = (unsigned long)(time(NULL) * 1000);
+
+            if (fabs(change) >= MOVE && current_time - last_alert_time[symbol_index] >= DEBOUNCE_TIME) {
+                int is_increase = change > 0;
+                printf("%s: %s %.2f%% | Price: %.2f | Volume: %d\n", symbols[symbol_index], is_increase ? "UP" : "DOWN", fabs(change), current_price, current_volume);
+
+                // Pass the symbol as the fifth argument
+                send_alert_to_server(is_increase, fabs(change), current_price, current_volume, symbols[symbol_index]);
+                last_alert_time[symbol_index] = current_time;
+            }
+
+            last_checked_price[symbol_index] = current_price;
         }
-        break;
+    }
+    return 0;
+}
 
-    case LWS_CALLBACK_CLIENT_RECEIVE:
-    {
-        LOG_DEBUG("[DEBUG] Received raw message: %.*s\n", (int)len, (char *)in);
+// Local server callback
+// Local server callback
+static int callback_local_server(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
+    switch (reason) {
+        case LWS_CALLBACK_CLIENT_ESTABLISHED:
+            printf("[SCANNER] WebSocket connected to local server\n");
+            wsi_local = wsi;  // Store WebSocket connection
 
-        struct json_object *msg = json_tokener_parse((char *)in);
-        if (!msg)
-        {
-            printf("[ERROR] Failed to parse JSON message.\n");
+            // Send initial registration
+            {
+                char register_msg[64];
+                snprintf(register_msg, sizeof(register_msg), "{\"client_id\":\"scanner\"}");
+
+                unsigned char buf[LWS_PRE + 64];
+                unsigned char *p = &buf[LWS_PRE];
+                size_t msg_len = strlen(register_msg);
+                memcpy(p, register_msg, msg_len);
+
+                if (lws_write(wsi, p, msg_len, LWS_WRITE_TEXT) < 0) {
+                    printf("[ERROR] Failed to send WebSocket registration\n");
+                } else {
+                    printf("[SCANNER] Registered client_id with WebSocket server\n");
+                }
+            }
+            break;
+
+        case LWS_CALLBACK_CLIENT_RECEIVE: {
+            if (!in || len == 0) {
+                printf("[ERROR] Received empty WebSocket message\n");
+                break;
+            }
+
+            struct json_object *msg = json_tokener_parse((char *)in);
+            if (!msg) {
+                printf("[ERROR] Failed to parse WebSocket message: %.*s\n", (int)len, (char *)in);
+                break;
+            }
+
+            struct json_object *symbols_json;
+            if (json_object_object_get_ex(msg, "symbols", &symbols_json)) {
+                // Free old symbols before updating
+                free_symbols();
+
+                int received_symbols = json_object_array_length(symbols_json);
+                num_symbols = received_symbols > MAX_SYMBOLS ? MAX_SYMBOLS : received_symbols;  // Enforce MAX_SYMBOLS limit
+
+                symbols = malloc(num_symbols * sizeof(char *));
+                if (!symbols) {
+                    printf("[ERROR] Failed to allocate memory for symbols\n");
+                    json_object_put(msg);
+                    return -1;
+                }
+
+                printf("[LOCAL SERVER] Symbols updated (%d):\n", num_symbols);
+
+                for (int i = 0; i < num_symbols; i++) {
+                    symbols[i] = strdup(json_object_get_string(json_object_array_get_idx(symbols_json, i)));
+                    if (!symbols[i]) {
+                        printf("[ERROR] Failed to allocate memory for symbol %d\n", i);
+                    } else {
+                        printf(" - %s\n", symbols[i]);
+                    }
+                }
+
+                // Trigger re-subscription on Finnhub
+                if (wsi_finnhub) {
+                    lws_callback_on_writable(wsi_finnhub);
+                }
+            } else {
+                printf("[LOCAL SERVER] No symbols found in message\n");
+            }
+
+            json_object_put(msg);
             break;
         }
 
-        // Check for "type" field
-        struct json_object *type_obj;
-        if (json_object_object_get_ex(msg, "type", &type_obj))
-        {
-            const char *type_str = json_object_get_string(type_obj);
-            if (type_str)
-            {
-                if (strcmp(type_str, "ping") == 0)
-                {
-                    LOG_DEBUG("[DEBUG] Ignoring ping message.\n");
+        case LWS_CALLBACK_CLOSED:
+            if (wsi == wsi_local) {
+                wsi_local = NULL;  // Reset when WebSocket closes
+                printf("[SCANNER] WebSocket disconnected from local server\n");
+            }
+            break;
+
+        default:
+            break;
+    }
+    return 0;
+}
+
+static int callback_finnhub(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
+    per_session_data *pss = (per_session_data *)user;
+
+    switch (reason) {
+        case LWS_CALLBACK_CLIENT_ESTABLISHED:
+            printf("[FINNHUB] Connected\n");
+            pss->sub_index = 0;
+            lws_callback_on_writable(wsi);
+            break;
+
+        case LWS_CALLBACK_CLIENT_WRITEABLE:
+            if (pss->sub_index < num_symbols) {
+                char subscribe_msg[128];
+                snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", symbols[pss->sub_index]);
+
+                unsigned char buf[LWS_PRE + 256];
+                unsigned char *p = &buf[LWS_PRE];
+                size_t msg_len = strlen(subscribe_msg);
+                memcpy(p, subscribe_msg, msg_len);
+
+                lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
+                printf("[FINNHUB] Subscribed to: %s\n", symbols[pss->sub_index]);
+
+                pss->sub_index++;
+
+                // Request the next writable callback if there are more symbols to subscribe
+                if (pss->sub_index < num_symbols) {
+                    lws_callback_on_writable(wsi);
+                }
+            }
+            break;
+
+        case LWS_CALLBACK_CLIENT_RECEIVE: {
+            LOG_DEBUG("[FINNHUB] Trade data received: %.*s\n", (int)len, (char *)in);
+
+            // Check if the message is a ping message
+            if (len == 4 && strncmp((char *)in, "ping", 4) == 0) {
+                LOG_DEBUG("[FINNHUB] Ignored ping message.\n");
+                break;  // Ignore ping messages
+            }
+
+            // Parse incoming JSON message
+            struct json_object *msg = json_tokener_parse((char *)in);
+            if (!msg) {
+                printf("[ERROR] Failed to parse JSON message: %.*s\n", (int)len, (char *)in);
+                break;
+            }
+
+            // Check if the JSON contains a "type" field
+            struct json_object *type_obj;
+            if (json_object_object_get_ex(msg, "type", &type_obj)) {
+                const char *msg_type = json_object_get_string(type_obj);
+                if (strcmp(msg_type, "ping") == 0) {
+                    LOG_DEBUG("[FINNHUB] Ignored ping message.\n");
                     json_object_put(msg);
                     break;
-                }
-                else if (strcmp(type_str, "error") == 0)
-                {
-                    struct json_object *error_obj;
-                    if (json_object_object_get_ex(msg, "error", &error_obj))
-                    {
-                        printf("[ERROR] Server error: %s\n", json_object_get_string(error_obj));
-                    }
+                } else if (strcmp(msg_type, "error") == 0) {
+                    printf("[FINNHUB] Error message received: %s\n", json_object_to_json_string(msg));
                     json_object_put(msg);
                     break;
                 }
             }
-        }
 
-        // Check for trade data
-        struct json_object *data_array;
-        if (json_object_object_get_ex(msg, "data", &data_array) &&
-            json_object_get_type(data_array) == json_type_array)
-        {
-            for (size_t i = 0; i < json_object_array_length(data_array); i++)
-            {
+            // Extract "data" array from JSON
+            struct json_object *data_array;
+            if (!json_object_object_get_ex(msg, "data", &data_array) || json_object_get_type(data_array) != json_type_array) {
+                printf("[ERROR] JSON does not contain a valid 'data' array. Ignoring message.\n");
+                json_object_put(msg);
+                return 0;  // Return early
+            }
+
+            for (size_t i = 0; i < json_object_array_length(data_array); i++) {
                 struct json_object *trade = json_object_array_get_idx(data_array, i);
-                struct json_object *s, *p;
+                struct json_object *symbol_obj, *price_obj, *volume_obj;
 
-                if (json_object_object_get_ex(trade, "s", &s) &&
-                    json_object_object_get_ex(trade, "p", &p))
-                {
-                    const char *symbol = json_object_get_string(s);
-                    double price = json_object_get_double(p);
+                // Ensure all required fields are present
+                if (json_object_object_get_ex(trade, "s", &symbol_obj) && json_object_object_get_ex(trade, "p", &price_obj) && json_object_object_get_ex(trade, "v", &volume_obj)) {
+                    const char *symbol = json_object_get_string(symbol_obj);
+                    double price = json_object_get_double(price_obj);
+                    int volume = json_object_get_int(volume_obj);
 
-                    LOG_DEBUG("[DEBUG] Symbol: %s, Price: %.2f\n", symbol, price);
+                    LOG_DEBUG("[DEBUG] Received Trade: Symbol=%s | Price=%.4f | Volume=%d\n", symbol, price, volume);
 
-                    int idx = get_symbol_index(symbol);
-                    if (idx != -1)
-                    {
-                        store_trade(idx, price);
-                        check_price_movement(idx);
+                    // Find the symbol index
+                    for (int j = 0; j < num_symbols; j++) {
+                        if (strcmp(symbols[j], symbol) == 0) {
+                            store_trade(j, price, volume);
+                            break;
+                        }
                     }
-                }
-                else
-                {
-                    printf("[WARNING] Trade data missing expected fields. Raw: %s\n",
-                           json_object_to_json_string(trade));
+                } else {
+                    printf("[ERROR] Missing required trade data fields. Skipping entry.\n");
                 }
             }
+
+            // Free JSON object
+            json_object_put(msg);
+            break;
         }
-        else
-        {
-            printf("[WARNING] Received message missing 'data' array. Raw: %s\n",
-                   json_object_to_json_string(msg));
-        }
 
-        json_object_put(msg);
-        break;
-    }
+        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+            printf("[FINNHUB] Connection error\n");
+            break;
 
-    case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-        printf("Connection error!\n");
-        break;
+        case LWS_CALLBACK_CLOSED:
+            printf("[FINNHUB] Disconnected\n");
+            break;
 
-    case LWS_CALLBACK_CLOSED:
-        printf("Disconnected\n");
-        break;
-
-    default:
-        break;
+        default:
+            break;
     }
     return 0;
 }
 
-#include <windows.h>  // ✅ Required for threading
+int main() {
+    // Create a single context
+    struct lws_context_creation_info info = {0};
+    struct lws_protocols protocols[] = {{"local-server-protocol", callback_local_server, 0, 0}, {"finnhub-protocol", callback_finnhub, sizeof(per_session_data), 0}, {NULL, NULL, 0, 0}};
+    info.protocols = protocols;
+    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
-DWORD WINAPI refresh_thread(LPVOID lpParam)
-{
-    while (1)
-    {
-        Sleep(REFRESH_INTERVAL); // ✅ Sleep for 3 minutes
-        refresh_symbols();
-    }
-    return 0;
-}
-
-int main()
-{
-    char response[32768] = {0}; // ✅ Ensure buffer is large enough
-    if (fetch_symbols("http://localhost:8080/symbols", response, sizeof(response)) || parse_symbols(response))
-    {
-        fprintf(stderr, "Failed to initialize symbols\n");
+    struct lws_context *context = lws_create_context(&info);
+    if (!context) {
+        fprintf(stderr, "[ERROR] Failed to create context\n");
         return 1;
     }
 
-    // ✅ Start the refresh thread (runs in the background)
-    HANDLE threadHandle = CreateThread(NULL, 0, refresh_thread, NULL, 0, NULL);
-    if (threadHandle == NULL)
-    {
-        printf("[ERROR] Failed to create refresh thread\n");
-        return 1;
-    }
-    CloseHandle(threadHandle); // ✅ No need to keep handle open
+    // Connect to the local WebSocket server
+    struct lws_client_connect_info conn_local = {0};
+    conn_local.context = context;
+    conn_local.address = "192.168.1.17";
+    conn_local.port = 8000;
+    conn_local.path = "/ws";
+    conn_local.host = conn_local.address;
+    conn_local.origin = conn_local.address;
+    conn_local.protocol = "local-server-protocol";
 
-    while (1)
-    {
-        printf("[INFO] Starting WebSocket connection...\n");
-
-        struct lws_context_creation_info info = {0};
-        struct lws_protocols protocols[] = {
-            {"ws-protocol", callback_ws, sizeof(per_session_data), 0},
-            {NULL, NULL, 0, 0}};
-
-        info.protocols = protocols;
-        info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_VALIDATE_UTF8;
-
-        struct lws_context *context = lws_create_context(&info);
-        if (!context)
-        {
-            printf("[ERROR] Failed to create WebSocket context, retrying in 5s...\n");
-            Sleep(5000);
-            continue;
-        }
-
-        struct lws_client_connect_info conn_info = {0};
-        conn_info.context = context;
-        conn_info.address = "ws.finnhub.io";
-        conn_info.port = 443;
-        conn_info.path = "/?token=crhlrm9r01qjv9rl4bhgcrhlrm9r01qjv9rl4bi0";
-        conn_info.host = conn_info.address;
-        conn_info.origin = conn_info.address;
-        conn_info.protocol = "ws-protocol";
-        conn_info.ssl_connection = LCCSCF_USE_SSL;
-
-        struct lws *wsi = lws_client_connect_via_info(&conn_info);
-        if (!wsi)
-        {
-            printf("[ERROR] Failed to connect to WebSocket, retrying in 5s...\n");
-            lws_context_destroy(context);
-            Sleep(5000);
-            continue;
-        }
-
-        // ✅ Run WebSocket loop until it disconnects
-        while (1)
-        {
-            if (lws_service(context, 10) < 0)
-            {
-                printf("[ERROR] WebSocket error, reconnecting in 5s...\n");
-                break; // ✅ Break out of the loop to reconnect
-            }
-        }
-
-        // ✅ WebSocket disconnected, clean up and restart
-        printf("[WARNING] WebSocket disconnected, restarting...\n");
+    wsi_local = lws_client_connect_via_info(&conn_local);
+    if (!wsi_local) {
+        fprintf(stderr, "[ERROR] Failed to connect to local WebSocket server\n");
         lws_context_destroy(context);
-        Sleep(5000); // ✅ Wait before reconnecting
+        return 1;
     }
 
+    // Send the initial registration message (client_id)
+    char register_msg[64];
+    snprintf(register_msg, sizeof(register_msg), "{\"client_id\":\"scanner\"}");
+
+    unsigned char buf[LWS_PRE + 64];
+    unsigned char *p = &buf[LWS_PRE];
+    size_t msg_len = strlen(register_msg);
+    memcpy(p, register_msg, msg_len);
+
+    // Send registration message after connection is established
+    lws_write(wsi_local, p, msg_len, LWS_WRITE_TEXT);
+    printf("[SCANNER] Sent client_id registration\n");
+
+    // Connect to Finnhub
+    struct lws_client_connect_info conn_finnhub = {0};
+    conn_finnhub.context = context;
+    conn_finnhub.address = "ws.finnhub.io";
+    conn_finnhub.port = 443;
+    conn_finnhub.path = "/?token=crhlrm9r01qjv9rl4bhgcrhlrm9r01qjv9rl4bi0";
+    conn_finnhub.host = conn_finnhub.address;
+    conn_finnhub.origin = conn_finnhub.address;
+    conn_finnhub.protocol = "finnhub-protocol";
+    conn_finnhub.ssl_connection = LCCSCF_USE_SSL;
+
+    wsi_finnhub = lws_client_connect_via_info(&conn_finnhub);
+    if (!wsi_finnhub) {
+        fprintf(stderr, "[ERROR] Failed to connect to Finnhub\n");
+        lws_context_destroy(context);
+        return 1;
+    }
+
+    // Start the monitor thread
+    HANDLE monitorHandle = CreateThread(NULL, 0, monitor_thread, NULL, 0, NULL);
+    if (!monitorHandle) {
+        fprintf(stderr, "[ERROR] Failed to create monitor thread\n");
+        lws_context_destroy(context);
+        return 1;
+    }
+
+    // Event loop
+    while (1) {
+        lws_service(context, 50);
+    }
+
+    // Cleanup (optional in this infinite loop)
+    lws_context_destroy(context);
+    if (!symbols) return 0;
+    free_symbols();
     return 0;
 }

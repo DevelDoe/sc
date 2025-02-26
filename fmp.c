@@ -68,10 +68,10 @@ int main()
         // API Endpoint and Query Parameters for Financial Modeling Prep.
         const char *api_key = "RFWWfFzwRZJrDNSxzF4M64RKcuXq3T0O";
         const char *url = "https://financialmodelingprep.com/api/v3/stock-screener";
-        const char *market_cap_upper = "2000000000";
-        const char *price_lower = "1.75";
+        const char *market_cap_upper = "10000000";
+        const char *price_lower = "1.5";
         const char *price_upper = "10";
-        const char *min_volume = "3000000";
+        const char *min_volume = "50000";
         const char *exchange = "NASDAQ";
         const char *trading = "true";
         const char *etf = "false";
