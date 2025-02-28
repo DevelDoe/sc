@@ -32,7 +32,7 @@ unsigned long get_current_time_ms() {
 }
 
 /* ----------------------------- Configuration ------------------------------ */
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 #define MAX_SYMBOLS 50
 #define PRICE_MOVEMENT 1.0  // 1% price movement
 #define DEBOUNCE_TIME 3000  // 3 seconds in milliseconds
@@ -187,7 +187,7 @@ static int handle_local_server_connection(ScannerState *state) {
 
     struct lws_client_connect_info ccinfo = {0};
     ccinfo.context = state->context;
-    ccinfo.address = "192.168.1.17";
+    ccinfo.address = "172.232.155.62";
     ccinfo.port = 8000;
     ccinfo.path = "/ws";
     ccinfo.host = ccinfo.address;
@@ -400,7 +400,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            LOG("Finnhub received data: %.*s\n", (int)len, (char *)in);
+            LOG_DEBUG("Finnhub received data: %.*s\n", (int)len, (char *)in);
             // Ignore ping messages
             if (len == 4 && strncmp((char *)in, "ping", 4) == 0) {
                 LOG("Ignored ping message.\n");
@@ -436,7 +436,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                     const char *symbol = json_object_get_string(sym_obj);
                     double price = json_object_get_double(price_obj);
                     int volume = json_object_get_int(vol_obj);
-                    LOG("Received trade: symbol=%s, price=%.2f, volume=%d\n", symbol, price, volume);
+                    LOG_DEBUG("Received trade: symbol=%s, price=%.2f, volume=%d\n", symbol, price, volume);
                     enqueue_trade(state, symbol, price, volume);
                 } else {
                     LOG("Missing required trade data fields. Skipping entry.\n");
