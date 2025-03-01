@@ -32,7 +32,7 @@ unsigned long get_current_time_ms() {
 }
 
 /* ----------------------------- Configuration ------------------------------ */
-#define DEBUG_MODE 0
+#define DEBUG_MODE 1
 #define MAX_SYMBOLS 50
 #define PRICE_MOVEMENT 1.0  // 1% price movement
 #define DEBOUNCE_TIME 3000  // 3 seconds in milliseconds
@@ -101,6 +101,7 @@ typedef struct {
 
     // Global shutdown flag
     volatile int shutdown_flag;
+    char scanner_id[64];  // Store scanner ID
 } ScannerState;
 
 // Session data for Finnhub connection
@@ -242,9 +243,10 @@ static void send_alert(ScannerState *state, int symbol_idx, double change, doubl
 
     char payload[256];
     snprintf(payload, sizeof(payload),
-             "{\"client_id\":\"scanner\",\"data\":{"
+             "{\"client_id\":\"%s\",\"data\":{"
              "\"symbol\":\"%s\",\"direction\":\"%s\","
              "\"change_percent\":%.2f,\"price\":%.2f,\"volume\":%d}}",
+             state->scanner_id,  // Changed from "scanner" to state->scanner_id
              state->symbols[symbol_idx], direction, fabs(change), price, volume);
 
     unsigned char buf[LWS_PRE + 256];
@@ -295,7 +297,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             state->wsi_local = wsi;
             {
                 char register_msg[128];
-                snprintf(register_msg, sizeof(register_msg), "{\"client_id\":\"scanner\"}");
+                snprintf(register_msg, sizeof(register_msg), "{\"client_id\":\"%s\"}", state->scanner_id);
                 unsigned char buf[LWS_PRE + 128];
                 unsigned char *p = &buf[LWS_PRE];
                 size_t msg_len = strlen(register_msg);
@@ -393,7 +395,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
-                LOG("Subscribed to: %s\n", subscribe_msg);
+                LOG_DEBUG("Subscribed to: %s\n", subscribe_msg);
+                LOG("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
                 if (session->sub_index < state->num_symbols) lws_callback_on_writable(wsi);
             }
@@ -561,7 +564,14 @@ void handle_signal(int sig) {
 }
 
 /* ----------------------------- Main Function ----------------------------- */
-int main() {
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s {scanner_id}\n", argv[0]);
+        return 1;
+    }
+
+    const char *scanner_id = argv[1];
+
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGSEGV, handle_signal);
@@ -571,7 +581,10 @@ int main() {
         ScannerState state;
         initialize_state(&state);
 
-        // Define protocols for local server and Finnhub
+        // Store the scanner ID
+        strncpy(state.scanner_id, scanner_id, sizeof(state.scanner_id) - 1);
+        state.scanner_id[sizeof(state.scanner_id) - 1] = '\0';
+
         struct lws_protocols protocols[] = {{"local-server", local_server_callback, 0, 0}, {"finnhub", finnhub_callback, sizeof(FinnhubSession), 0}, {NULL, NULL, 0, 0}};
 
         struct lws_context_creation_info info = {0};
@@ -586,27 +599,25 @@ int main() {
             return -1;
         }
 
+        LOG("Scanner ID: %s\n", scanner_id);
+
         handle_local_server_connection(&state);
         handle_finnhub_connection(&state);
 
-        // Start the trade processing and alert sending threads
         HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
         HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
 
-        // Main event loop for libwebsockets
         while (!shutdown_flag && !restart_flag) {
             lws_service(state.context, 50);
             LOG_DEBUG("Running WebSocket event loop\n");
         }
 
-        // Signal threads to shutdown and wait for them
         state.shutdown_flag = 1;
         pthread_cond_broadcast(&state.trade_queue.cond);
         pthread_cond_broadcast(&state.alert_queue.cond);
         WaitForSingleObject(hTradeThread, INFINITE);
         WaitForSingleObject(hAlertThread, INFINITE);
 
-        // Cleanup and restart if needed
         lws_context_destroy(state.context);
         cleanup_state(&state);
 
