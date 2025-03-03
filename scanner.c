@@ -10,8 +10,13 @@
 #include <windows.h>
 #ifdef _WIN32
 #include <windows.h>
+#define SLEEP_MS(ms) Sleep(ms)
+#define THREAD_FUNC DWORD WINAPI
 #else
-#include <sys/time.h>
+#include <pthread.h>
+#include <unistd.h>
+#define SLEEP_MS(ms) usleep((ms) * 1000)
+#define THREAD_FUNC void *
 #endif
 
 // Function to get the current time in milliseconds
@@ -36,6 +41,7 @@ unsigned long get_current_time_ms() {
 #define MAX_SYMBOLS 50
 #define PRICE_MOVEMENT 1.0  // 1% price movement
 #define DEBOUNCE_TIME 3000  // 3 seconds in milliseconds
+#define MAX_TRADES 1000     // Upper limit for active trades to avoid memory overload
 #define LOCAL_SERVER_URI "ws://192.168.1.17:8000/ws"
 #define FINNHUB_URI "wss://ws.finnhub.io/?token=your_token"
 #define MAX_QUEUE_SIZE 1024  // For both trade and alert queues
@@ -78,30 +84,35 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 } AlertQueue;
+#include <stdint.h>
 
-// Global scanner state; note that we separate the symbols data mutex because
-// symbols may be updated by the local server callback.
 typedef struct {
     char *symbols[MAX_SYMBOLS];
     int num_symbols;
-    double last_checked_price[MAX_SYMBOLS];
     unsigned long last_alert_time[MAX_SYMBOLS];
 
-    // WebSocket connection handles
+    // Trade storage (circular buffer for each symbol)
+    struct {
+        double price;
+        uint64_t timestamp;
+        int volume;  // Store volume per trade
+    } trade_history[MAX_SYMBOLS][MAX_TRADES];
+
+    int trade_count[MAX_SYMBOLS];             // Tracks the number of stored trades per symbol
+    int trade_head[MAX_SYMBOLS];              // Points to the oldest trade in the history
+    unsigned long total_volume[MAX_SYMBOLS];  // NEW: Tracks cumulative volume in the last 5 min
+
     struct lws *wsi_local;
     struct lws *wsi_finnhub;
     struct lws_context *context;
 
-    // Queues for inter-thread communication
     TradeQueue trade_queue;
     AlertQueue alert_queue;
 
-    // Mutex for protecting symbols array updates
     pthread_mutex_t symbols_mutex;
-
-    // Global shutdown flag
     volatile int shutdown_flag;
-    char scanner_id[64];  // Store scanner ID
+    char scanner_id[64];
+
 } ScannerState;
 
 // Session data for Finnhub connection
@@ -343,7 +354,8 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
                     state->symbols[i] = strdup(sym);
                     // Initialize price tracking values
-                    state->last_checked_price[i] = 0.0;
+                    state->trade_count[i] = 0;  // Reset trade history count
+                    state->trade_head[i] = 0;   // Reset head pointer
                     state->last_alert_time[i] = 0;
                 }
 
@@ -371,6 +383,8 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
     }
     return 0;
 }
+
+#define FINNHUB_LOG_MODE 1
 
 static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     FinnhubSession *session = (FinnhubSession *)user;
@@ -403,7 +417,6 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            LOG_DEBUG("Finnhub received data: %.*s\n", (int)len, (char *)in);
             // Ignore ping messages
             if (len == 4 && strncmp((char *)in, "ping", 4) == 0) {
                 LOG("Ignored ping message.\n");
@@ -467,23 +480,36 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
 /* ----------------------------- Worker Threads ----------------------------- */
 
-// Trade processing thread: reads trades from the trade queue and checks for alerts.
+/* ----------------------------- Configuration ------------------------------ */
+#define MIN_TRADE_VOLUME 1           // Ignore individual trades below this volume
+#define MIN_CUMULATIVE_VOLUME 50000  // Only trigger alerts if cumulative volume is above this threshold
+
 DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
     ScannerState *state = (ScannerState *)lpParam;
+
     while (!state->shutdown_flag) {
         TradeMsg trade;
         pthread_mutex_lock(&state->trade_queue.mutex);
+
         while (trade_queue_empty(&state->trade_queue) && !state->shutdown_flag) {
             pthread_cond_wait(&state->trade_queue.cond, &state->trade_queue.mutex);
         }
+
         if (state->shutdown_flag) {
             pthread_mutex_unlock(&state->trade_queue.mutex);
             break;
         }
+
         queue_pop_trade(&state->trade_queue, &trade);
         pthread_mutex_unlock(&state->trade_queue.mutex);
 
-        // Find the symbol index (protect access to symbols)
+        // Ignore individual trades below the minimum trade volume
+        if (trade.volume < MIN_TRADE_VOLUME) {
+            LOG_DEBUG("[trade_processing_thread] Ignoring trade: %s | Price: %.2f | Volume: %d (Below threshold: %d)\n", trade.symbol, trade.price, trade.volume, MIN_TRADE_VOLUME);
+            continue;
+        }
+
+        // Find the symbol index
         int idx = -1;
         pthread_mutex_lock(&state->symbols_mutex);
         for (int i = 0; i < state->num_symbols; i++) {
@@ -494,60 +520,169 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         }
         pthread_mutex_unlock(&state->symbols_mutex);
 
-        if (idx < 0) continue;  // symbol not found
-
-        // Protect access to last_checked_price and last_alert_time
-        pthread_mutex_lock(&state->symbols_mutex);
-        double old_price = state->last_checked_price[idx];
-        if (old_price <= 0 || isnan(old_price) || isinf(old_price)) {
-            state->last_checked_price[idx] = trade.price;
-            pthread_mutex_unlock(&state->symbols_mutex);
+        if (idx < 0) {
+            LOG_DEBUG("[trade_processing_thread] Symbol %s not found in tracked symbols\n", trade.symbol);
             continue;
         }
 
-        // Get precise current time in milliseconds
-        unsigned long current_time = get_current_time_ms();
+        pthread_mutex_lock(&state->symbols_mutex);
+        uint64_t current_time = get_current_time_ms();
 
-        double change = ((trade.price - old_price) / old_price) * 100.0;
+        LOG_DEBUG("[trade_processing_thread] Received trade: %s | Price: %.2f | Volume: %d | Timestamp: %llu\n", trade.symbol, trade.price, trade.volume, current_time);
 
-        if (fabs(change) >= PRICE_MOVEMENT && (current_time - state->last_alert_time[idx] >= DEBOUNCE_TIME)) {
-            AlertMsg alert;
-            alert.symbol_index = idx;
-            alert.change = change;  // Pass the signed change
-            alert.price = trade.price;
-            alert.volume = trade.volume;
-            pthread_mutex_lock(&state->alert_queue.mutex);
-            queue_push_alert(&state->alert_queue, &alert);
-            pthread_cond_signal(&state->alert_queue.cond);
-            pthread_mutex_unlock(&state->alert_queue.mutex);
-            state->last_alert_time[idx] = current_time;
+        // Store trade in circular buffer
+        int pos = (state->trade_head[idx] + state->trade_count[idx]) % MAX_TRADES;
+        state->trade_history[idx][pos].price = trade.price;
+        state->trade_history[idx][pos].timestamp = current_time;
+        state->trade_history[idx][pos].volume = trade.volume;
+
+        state->total_volume[idx] += trade.volume;  // Add volume to cumulative total
+
+        if (state->trade_count[idx] < MAX_TRADES) {
+            state->trade_count[idx]++;
+        } else {
+            // If buffer is full, move head forward and remove oldest trade's volume
+            state->total_volume[idx] -= state->trade_history[idx][state->trade_head[idx]].volume;
+            state->trade_head[idx] = (state->trade_head[idx] + 1) % MAX_TRADES;
+            LOG_DEBUG("[trade_processing_thread] Buffer full, overwriting oldest trade at index %d\n", state->trade_head[idx]);
         }
 
-        // Update last checked price
-        state->last_checked_price[idx] = trade.price;
+        // Find the price 5 minutes ago
+        double old_price = 0.0;
+        uint64_t oldest_time = 0;
+
+        if (state->trade_count[idx] > 0) {
+            int oldest_pos = state->trade_head[idx];  // Get oldest stored position
+            old_price = state->trade_history[idx][oldest_pos].price;
+            oldest_time = state->trade_history[idx][oldest_pos].timestamp;
+
+            LOG_DEBUG("[trade_processing_thread] Comparison price for %s from 5 min ago: %.2f (Timestamp: %llu)\n", trade.symbol, old_price, oldest_time);
+        }
+
+        if (old_price > 0) {
+            double change = ((trade.price - old_price) / old_price) * 100.0;
+
+            LOG_DEBUG("[trade_processing_thread] %s | Old Price: %.2f -> New Price: %.2f | Change: %.2f%%\n", trade.symbol, old_price, trade.price, change);
+
+            // Check if price movement and cumulative volume exceed thresholds
+            if (fabs(change) >= PRICE_MOVEMENT && (current_time - state->last_alert_time[idx] >= DEBOUNCE_TIME) && state->total_volume[idx] >= MIN_CUMULATIVE_VOLUME) {
+                AlertMsg alert;
+                alert.symbol_index = idx;
+                alert.change = change;
+                alert.price = trade.price;
+                alert.volume = trade.volume;
+
+                pthread_mutex_lock(&state->alert_queue.mutex);
+                queue_push_alert(&state->alert_queue, &alert);
+                pthread_cond_signal(&state->alert_queue.cond);
+                pthread_mutex_unlock(&state->alert_queue.mutex);
+
+                LOG_DEBUG("[trade_processing_thread] 🚨 ALERT TRIGGERED for %s | Change: %.2f%% | Cumulative Volume: %lu\n", trade.symbol, change, state->total_volume[idx]);
+
+                state->last_alert_time[idx] = current_time;
+            } else {
+                if (state->total_volume[idx] < MIN_CUMULATIVE_VOLUME) {
+                    LOG_DEBUG("[trade_processing_thread] No alert for %s | Cumulative Volume: %lu (Below threshold: %d)\n", trade.symbol, state->total_volume[idx], MIN_CUMULATIVE_VOLUME);
+                } else {
+                    LOG_DEBUG("[trade_processing_thread] No alert for %s | Change: %.2f%% (Threshold: %.2f%%)\n", trade.symbol, change, PRICE_MOVEMENT);
+                }
+            }
+        } else {
+            LOG_DEBUG("[trade_processing_thread] Skipping alert check for %s - Not enough data\n", trade.symbol);
+        }
+
         pthread_mutex_unlock(&state->symbols_mutex);
     }
     return 0;
 }
+
+DWORD WINAPI trade_cleaner_thread(LPVOID lpParam) {
+    ScannerState *state = (ScannerState *)lpParam;
+
+    while (!state->shutdown_flag) {
+        uint64_t current_time = get_current_time_ms();
+
+        pthread_mutex_lock(&state->symbols_mutex);
+        for (int i = 0; i < state->num_symbols; i++) {
+            int removed_count = 0;
+            int removed_volume = 0;
+
+            while (state->trade_count[i] > 0) {
+                int oldest_pos = state->trade_head[i];
+
+                if (current_time - state->trade_history[i][oldest_pos].timestamp >= 300000) {
+                    // Remove trade by moving head forward
+                    removed_volume += state->trade_history[i][oldest_pos].volume;
+                    state->trade_head[i] = (state->trade_head[i] + 1) % MAX_TRADES;
+                    state->trade_count[i]--;
+                    removed_count++;
+                } else {
+                    break;  // Stop when we reach a valid (recent) trade
+                }
+            }
+
+            state->total_volume[i] -= removed_volume;  // Subtract old trades' volume
+
+            if (removed_count > 0) {
+                LOG_DEBUG("[trade_cleaner_thread] Removed %d old trades for %s | Remaining: %d | Volume Adjusted: %lu\n", removed_count, state->symbols[i], state->trade_count[i],
+                          state->total_volume[i]);
+            }
+        }
+        pthread_mutex_unlock(&state->symbols_mutex);
+
+        SLEEP_MS(1000);
+    }
+    return 0;
+}
+
+void print_trade_history(ScannerState *state, const char *symbol) {
+    pthread_mutex_lock(&state->symbols_mutex);
+    int idx = -1;
+
+    for (int i = 0; i < state->num_symbols; i++) {
+        if (strcmp(state->symbols[i], symbol) == 0) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx < 0) {
+        LOG("[print_trade_history] Symbol %s not found\n", symbol);
+        pthread_mutex_unlock(&state->symbols_mutex);
+        return;
+    }
+
+    LOG("[print_trade_history] Trade history for %s:\n", symbol);
+    for (int j = 0; j < state->trade_count[idx]; j++) {
+        LOG("Trade %d | Price: %.2f | Timestamp: %llu\n", j, state->trade_history[idx][j].price, state->trade_history[idx][j].timestamp);
+    }
+
+    pthread_mutex_unlock(&state->symbols_mutex);
+}
+
 // Alert sending thread: reads alerts from the alert queue and sends them.
 DWORD WINAPI alert_sending_thread(LPVOID lpParam) {
     ScannerState *state = (ScannerState *)lpParam;
+
     while (!state->shutdown_flag) {
         AlertMsg alert;
+
         pthread_mutex_lock(&state->alert_queue.mutex);
         while (alert_queue_empty(&state->alert_queue) && !state->shutdown_flag) {
             pthread_cond_wait(&state->alert_queue.cond, &state->alert_queue.mutex);
         }
+
         if (state->shutdown_flag) {
             pthread_mutex_unlock(&state->alert_queue.mutex);
             break;
         }
+
         queue_pop_alert(&state->alert_queue, &alert);
         pthread_mutex_unlock(&state->alert_queue.mutex);
 
-        // Send alert using the local websocket connection.
         send_alert(state, alert.symbol_index, alert.change, alert.price, alert.volume);
     }
+
     return 0;
 }
 
@@ -581,7 +716,6 @@ int main(int argc, char *argv[]) {
         ScannerState state;
         initialize_state(&state);
 
-        // Store the scanner ID
         strncpy(state.scanner_id, scanner_id, sizeof(state.scanner_id) - 1);
         state.scanner_id[sizeof(state.scanner_id) - 1] = '\0';
 
@@ -604,8 +738,14 @@ int main(int argc, char *argv[]) {
         handle_local_server_connection(&state);
         handle_finnhub_connection(&state);
 
+#ifdef _WIN32
         HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
         HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
+#else
+        pthread_t hTradeThread, hAlertThread;
+        pthread_create(&hTradeThread, NULL, trade_processing_thread, &state);
+        pthread_create(&hAlertThread, NULL, alert_sending_thread, &state);
+#endif
 
         while (!shutdown_flag && !restart_flag) {
             lws_service(state.context, 50);
@@ -615,8 +755,14 @@ int main(int argc, char *argv[]) {
         state.shutdown_flag = 1;
         pthread_cond_broadcast(&state.trade_queue.cond);
         pthread_cond_broadcast(&state.alert_queue.cond);
+
+#ifdef _WIN32
         WaitForSingleObject(hTradeThread, INFINITE);
         WaitForSingleObject(hAlertThread, INFINITE);
+#else
+        pthread_join(hTradeThread, NULL);
+        pthread_join(hAlertThread, NULL);
+#endif
 
         lws_context_destroy(state.context);
         cleanup_state(&state);
@@ -625,8 +771,8 @@ int main(int argc, char *argv[]) {
             LOG("Restarting program due to crash...\n");
             restart_flag = 0;
         }
-    }
 
-    LOG("Program shutdown gracefully.\n");
-    return 0;
+        LOG("Program shutdown gracefully.\n");
+        return 0;
+    }
 }
