@@ -646,7 +646,7 @@ void *trade_processing_thread(void *lpParam) {
                 pthread_mutex_unlock(&state->alert_queue.mutex);
 
                 LOG_PROCESSING(
-                    "[trade_processing_thread] 🚨 ALERT TRIGGERED for %s | "
+                    "[trade_processing_thread] ALERT TRIGGERED for %s | "
                     "Change: %.2f%% | 5-min Rolling Volume: %lu\n",
                     trade.symbol, change, rolling_5min_volume);
 
@@ -663,22 +663,22 @@ void *trade_processing_thread(void *lpParam) {
                 // Additional logging for each failed condition:
                 if (!should_alert)
                     LOG_PROCESSING(
-                        "[trade_processing_thread] ❌ Reason: should_alert condition "
+                        "[trade_processing_thread] * should_alert condition "
                         "failed. Last alert price: %.2f, Current price: %.2f\n",
                         state->last_alert_price[idx], trade.price);
                 if (fabs(change) < PRICE_MOVEMENT)
                     LOG_PROCESSING(
-                        "[trade_processing_thread] ❌ Reason: Change %.2f%% is "
+                        "[trade_processing_thread] * Change %.2f%% is "
                         "below threshold %.2f%%\n",
                         fabs(change), PRICE_MOVEMENT);
                 if ((current_time - state->last_alert_time[idx]) < DEBOUNCE_TIME)
                     LOG_PROCESSING(
-                        "[trade_processing_thread] ❌ Reason: Debounce time not met. "
+                        "[trade_processing_thread] * Debounce time not met. "
                         "Time since last alert: %llu ms (Debounce required: %d ms)\n",
                         (current_time - state->last_alert_time[idx]), DEBOUNCE_TIME);
                 if (rolling_5min_volume < MIN_CUMULATIVE_VOLUME)
                     LOG_PROCESSING(
-                        "[trade_processing_thread] ❌ Reason: 5-min Rolling Volume "
+                        "[trade_processing_thread] * 5-min Rolling Volume "
                         "%lu is below threshold %d\n",
                         rolling_5min_volume, MIN_CUMULATIVE_VOLUME);
             }
