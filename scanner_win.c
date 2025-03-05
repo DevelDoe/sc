@@ -37,10 +37,11 @@ unsigned long get_current_time_ms() {
 }
 
 /* ----------------------------- Configuration ------------------------------ */
-#define CLEANER_MODE 1  // Enable only cleaner logs
-#define ALERTS_MODE 1   // Set to 1 to enable alert logs, 0 to disable
-#define WS_LOG_MODE 1   // Set to 1 to enable WebSocket logs, 0 to disable
-#define DEBUG_MODE 0    // Disable normal debug logs
+#define CLEANER_MODE 0  // Enable only cleaner logs
+#define ALERTS_MODE 0   // Set to 1 to enable alert logs, 0 to disable
+#define WS_LOG_MODE 0   // Set to 1 to enable WebSocket logs, 0 to disable
+#define PROCESSING_MODE 1
+#define DEBUG_MODE 0  // Disable normal debug logs
 
 #define MAX_SYMBOLS 50
 #define PRICE_MOVEMENT 1.0  // 1% price movement
@@ -64,10 +65,13 @@ unsigned long get_current_time_ms() {
     if (CLEANER_MODE) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
 
 #define LOG_ALERTS(fmt, ...) \
-    if (ALERTS_MODE) printf("[ALERT] [%s] " fmt, __func__, ##__VA_ARGS__)
+    if (ALERTS_MODE) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
 
 #define LOG_WS(fmt, ...) \
-    if (WS_LOG_MODE) printf("[WS] [%s] " fmt, __func__, ##__VA_ARGS__)
+    if (WS_LOG_MODE) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
+
+#define LOG_PROCESSING(fmt, ...) \
+    if (PROCESSING_MODE) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
 
 /* ----------------------------- Data Structures ---------------------------- */
 
@@ -517,7 +521,7 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
 
         // Ignore individual trades below the minimum trade volume
         if (trade.volume < MIN_TRADE_VOLUME) {
-            LOG_DEBUG("Ignoring trade: %s | Price: %.2f | Volume: %d (Below threshold: %d)\n", trade.symbol, trade.price, trade.volume, MIN_TRADE_VOLUME);
+            LOG_PROCESSING("Ignoring trade: %s | Price: %.2f | Volume: %d (Below threshold: %d)\n", trade.symbol, trade.price, trade.volume, MIN_TRADE_VOLUME);
             continue;
         }
 
@@ -533,14 +537,14 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         pthread_mutex_unlock(&state->symbols_mutex);
 
         if (idx < 0) {
-            LOG_DEBUG("Symbol %s not found in tracked symbols\n", trade.symbol);
+            LOG_PROCESSING("Symbol %s not found in tracked symbols\n", trade.symbol);
             continue;
         }
 
         pthread_mutex_lock(&state->symbols_mutex);
         uint64_t current_time = get_current_time_ms();
 
-        LOG_DEBUG("Received trade: %s | Price: %.2f | Volume: %d | Timestamp: %llu\n", trade.symbol, trade.price, trade.volume, current_time);
+        LOG_PROCESSING("Received trade: %s | Price: %.2f | Volume: %d | Timestamp: %llu\n", trade.symbol, trade.price, trade.volume, current_time);
 
         // Store trade in circular buffer
         int pos = (state->trade_head[idx] + state->trade_count[idx]) % MAX_TRADES;
@@ -563,7 +567,7 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         // ✅ Log every minute (5 min)
         static uint64_t last_log_time = 0;
         if (current_time - last_log_time >= 300000) {
-            LOG_CLEANER("DEBUG: %s | 5-min Rolling Volume: %lu | Last Trade: %.2f\n", trade.symbol, rolling_5min_volume, trade.price);
+            LOG_PROCESSING("DEBUG: %s | 5-min Rolling Volume: %lu | Last Trade: %.2f\n", trade.symbol, rolling_5min_volume, trade.price);
             last_log_time = current_time;  // ✅ Update timestamp after logging
         }
 
@@ -573,7 +577,7 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         } else {
             // ✅ If buffer is full, overwrite oldest trade
             state->trade_head[idx] = (state->trade_head[idx] + 1) % MAX_TRADES;
-            LOG_DEBUG("Buffer full, overwriting oldest trade at index %d\n", state->trade_head[idx]);
+            LOG_PROCESSING("Buffer full, overwriting oldest trade at index %d\n", state->trade_head[idx]);
         }
 
         // Find the price 5 minutes ago
@@ -592,13 +596,13 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         // Initialize last_alert_price if first trade for this symbol
         if (state->last_alert_price[idx] == 0.0) {
             state->last_alert_price[idx] = trade.price;
-            LOG_DEBUG(" Initialized last_alert_price for %s to %.2f\n", trade.symbol, trade.price);
+            LOG_PROCESSING("Initialized last_alert_price for %s to %.2f\n", trade.symbol, trade.price);
         }
 
         if (old_price > 0) {  // ✅ Now old_price is correctly retrieved
             double change = ((trade.price - old_price) / old_price) * 100.0;
 
-            LOG_DEBUG(" %s | Old Price: %.2f -> New Price: %.2f | Change: %.2f%%\n", trade.symbol, old_price, trade.price, change);
+            LOG_PROCESSING("%s | Old Price: %.2f -> New Price: %.2f | Change: %.2f%%\n", trade.symbol, old_price, trade.price, change);
 
             int should_alert = 0;
 
@@ -607,35 +611,35 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
                 should_alert = 1;
             }
 
-            if (should_alert && fabs(change) >= PRICE_MOVEMENT && (current_time - state->last_alert_time[idx] >= DEBOUNCE_TIME) && state->total_volume[idx] >= MIN_CUMULATIVE_VOLUME) {
+            if (should_alert && fabs(change) >= PRICE_MOVEMENT && (current_time - state->last_alert_time[idx] >= DEBOUNCE_TIME) &&
+                rolling_5min_volume >= MIN_CUMULATIVE_VOLUME) {  // ✅ Use rolling 5-min volume instead
                 AlertMsg alert;
                 alert.symbol_index = idx;
                 alert.change = change;
                 alert.price = trade.price;
-                alert.volume = state->total_volume[idx];
+                alert.volume = rolling_5min_volume;  // ✅ Use rolling 5-min volume in the alert
 
                 pthread_mutex_lock(&state->alert_queue.mutex);
                 queue_push_alert(&state->alert_queue, &alert);
                 pthread_cond_signal(&state->alert_queue.cond);
                 pthread_mutex_unlock(&state->alert_queue.mutex);
 
-                LOG_DEBUG("ALERT TRIGGERED for %s | Change: %.2f%% | Cumulative Volume: %lu\n", trade.symbol, change, state->total_volume[idx]);
+                LOG_PROCESSING("ALERT TRIGGERED for %s | Change: %.2f%% | 5-min Rolling Volume: %lu\n", trade.symbol, change, rolling_5min_volume);
 
                 state->last_alert_time[idx] = current_time;
-                state->last_alert_price[idx] = trade.price;  // ✅ Store last alerted price
-
+                state->last_alert_price[idx] = trade.price;
             } else {
-                LOG_DEBUG(
+                LOG_PROCESSING(
                     "ALERT **NOT** TRIGGERED for %s | Change: %.2f%% | "
-                    "Cumulative Volume: %lu / %d | Time Since Last Alert: %llu ms\n",
-                    trade.symbol, change, state->total_volume[idx], MIN_CUMULATIVE_VOLUME, (current_time - state->last_alert_time[idx]));
+                    "5-min Rolling Volume: %lu / %d | Time Since Last Alert: %llu ms\n",
+                    trade.symbol, change, rolling_5min_volume, MIN_CUMULATIVE_VOLUME, (current_time - state->last_alert_time[idx]));
 
                 // Additional logging for each failed condition:
-                if (!should_alert) LOG_DEBUG("Reason: should_alert condition failed. Last alert price: %.2f, Current price: %.2f\n", state->last_alert_price[idx], trade.price);
-                if (fabs(change) < PRICE_MOVEMENT) LOG_DEBUG("Reason: Change %.2f%% is below threshold %.2f%%\n", fabs(change), PRICE_MOVEMENT);
+                if (!should_alert) LOG_PROCESSING("  * should_alert condition failed. Last alert price: %.2f, Current price: %.2f\n", state->last_alert_price[idx], trade.price);
+                if (fabs(change) < PRICE_MOVEMENT) LOG_PROCESSING("  * Change %.2f%% is below threshold %.2f%%\n", fabs(change), PRICE_MOVEMENT);
                 if ((current_time - state->last_alert_time[idx]) < DEBOUNCE_TIME)
-                    LOG_DEBUG("Reason: Debounce time not met. Time since last alert: %llu ms (Debounce required: %d ms)\n", (current_time - state->last_alert_time[idx]), DEBOUNCE_TIME);
-                if (state->total_volume[idx] < MIN_CUMULATIVE_VOLUME) LOG_DEBUG("Reason: Cumulative volume %lu is below threshold %d\n", state->total_volume[idx], MIN_CUMULATIVE_VOLUME);
+                    LOG_PROCESSING("  * Debounce time not met. Time since last alert: %llu ms (Debounce required: %d ms)\n", (current_time - state->last_alert_time[idx]), DEBOUNCE_TIME);
+                if (rolling_5min_volume < MIN_CUMULATIVE_VOLUME) LOG_PROCESSING("  * 5-min Rolling Volume %lu is below threshold %d\n", rolling_5min_volume, MIN_CUMULATIVE_VOLUME);
             }
         }
 
