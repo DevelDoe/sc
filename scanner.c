@@ -37,19 +37,37 @@ unsigned long get_current_time_ms() {
 }
 
 /* ----------------------------- Configuration ------------------------------ */
-#define DEBUG_MODE 1
+#define CLEANER_MODE 1  // Enable only cleaner logs
+#define ALERTS_MODE 1   // Set to 1 to enable alert logs, 0 to disable
+#define WS_LOG_MODE 1   // Set to 1 to enable WebSocket logs, 0 to disable
+#define DEBUG_MODE 0    // Disable normal debug logs
+
 #define MAX_SYMBOLS 50
 #define PRICE_MOVEMENT 1.0  // 1% price movement
-#define DEBOUNCE_TIME 3000  // 3 seconds in milliseconds
+#define DEBOUNCE_TIME 5000  // 3 seconds in milliseconds
 #define MAX_TRADES 1000     // Upper limit for active trades to avoid memory overload
 #define LOCAL_SERVER_URI "ws://192.168.1.17:8000/ws"
 #define FINNHUB_URI "wss://ws.finnhub.io/?token=your_token"
 #define MAX_QUEUE_SIZE 1024  // For both trade and alert queues
 
-/* ----------------------------- Helper Macros ------------------------------ */
-#define LOG(fmt, ...) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
+#define MIN_TRADE_VOLUME 10          // Ignore individual trades below this volume
+#define MIN_CUMULATIVE_VOLUME 50000  // Only trigger alerts if cumulative volume is above this threshold
+
+/* ----------------------------- LOGGING ------------------------------ */
+#define LOG(fmt, ...) \
+    if (CLEANER_MODE == 0) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
+
 #define LOG_DEBUG(fmt, ...) \
     if (DEBUG_MODE) LOG(fmt, ##__VA_ARGS__)
+
+#define LOG_CLEANER(fmt, ...) \
+    if (CLEANER_MODE) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
+
+#define LOG_ALERTS(fmt, ...) \
+    if (ALERTS_MODE) printf("[ALERT] [%s] " fmt, __func__, ##__VA_ARGS__)
+
+#define LOG_WS(fmt, ...) \
+    if (WS_LOG_MODE) printf("[WS] [%s] " fmt, __func__, ##__VA_ARGS__)
 
 /* ----------------------------- Data Structures ---------------------------- */
 
@@ -90,17 +108,17 @@ typedef struct {
     char *symbols[MAX_SYMBOLS];
     int num_symbols;
     unsigned long last_alert_time[MAX_SYMBOLS];
+    double last_alert_price[MAX_SYMBOLS];  // NEW: Store last alert price
 
-    // Trade storage (circular buffer for each symbol)
     struct {
         double price;
         uint64_t timestamp;
-        int volume;  // Store volume per trade
+        int volume;
     } trade_history[MAX_SYMBOLS][MAX_TRADES];
 
-    int trade_count[MAX_SYMBOLS];             // Tracks the number of stored trades per symbol
-    int trade_head[MAX_SYMBOLS];              // Points to the oldest trade in the history
-    unsigned long total_volume[MAX_SYMBOLS];  // NEW: Tracks cumulative volume in the last 5 min
+    int trade_count[MAX_SYMBOLS];
+    int trade_head[MAX_SYMBOLS];
+    unsigned long total_volume[MAX_SYMBOLS];
 
     struct lws *wsi_local;
     struct lws *wsi_finnhub;
@@ -193,7 +211,7 @@ static void cleanup_state(ScannerState *state) {
 /* ----------------------------- WebSocket Handlers ----------------------------- */
 static int handle_local_server_connection(ScannerState *state) {
     if (!state || !state->context) {
-        LOG("Invalid state or context\n");
+        LOG_WS("Invalid state or context\n");
         return -1;
     }
 
@@ -209,17 +227,17 @@ static int handle_local_server_connection(ScannerState *state) {
 
     state->wsi_local = lws_client_connect_via_info(&ccinfo);
     if (!state->wsi_local) {
-        LOG("Failed to connect to local server\n");
+        LOG_WS("Failed to connect to local server\n");
         return -1;
     }
 
-    LOG("Local server connection initiated\n");
+    LOG_WS("Local server connection initiated\n");
     return 0;
 }
 
 static int handle_finnhub_connection(ScannerState *state) {
     if (!state || !state->context) {
-        LOG("Invalid state or context\n");
+        LOG_WS("Invalid state or context\n");
         return -1;
     }
 
@@ -235,18 +253,18 @@ static int handle_finnhub_connection(ScannerState *state) {
 
     state->wsi_finnhub = lws_client_connect_via_info(&ccinfo);
     if (!state->wsi_finnhub) {
-        LOG("Failed to connect to Finnhub\n");
+        LOG_WS("Failed to connect to Finnhub\n");
         return -1;
     }
 
-    LOG("Finnhub connection initiated\n");
+    LOG_WS("Finnhub connection initiated\n");
     return 0;
 }
 
 /* ----------------------------- Alert Sending ----------------------------- */
 static void send_alert(ScannerState *state, int symbol_idx, double change, double price, int volume) {
     if (symbol_idx < 0 || symbol_idx >= state->num_symbols || !state->symbols[symbol_idx]) {
-        LOG("Invalid symbol index or null symbol\n");
+        LOG_ALERTS("Invalid symbol index or null symbol\n");
         return;
     }
 
@@ -267,9 +285,9 @@ static void send_alert(ScannerState *state, int symbol_idx, double change, doubl
 
     if (state->wsi_local && !lws_send_pipe_choked(state->wsi_local)) {
         lws_write(state->wsi_local, p, len, LWS_WRITE_TEXT);
-        LOG("Alert sent: %s\n", payload);
+        LOG_ALERTS("Alert sent: %s\n", payload);
     } else {
-        LOG("Local server connection unavailable or choked\n");
+        LOG_ALERTS("Local server connection unavailable or choked\n");
     }
 }
 
@@ -304,7 +322,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
 
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            LOG("Connected to local server\n");
+            LOG_WS("Connected to local server\n");
             state->wsi_local = wsi;
             {
                 char register_msg[128];
@@ -314,9 +332,9 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 size_t msg_len = strlen(register_msg);
                 memcpy(p, register_msg, msg_len);
                 if (lws_write(wsi, p, msg_len, LWS_WRITE_TEXT) < 0)
-                    LOG("Failed to send registration message\n");
+                    LOG_WS("Failed to send registration message\n");
                 else
-                    LOG("Sent registration message: %s\n", register_msg);
+                    LOG_WS("Sent registration message: %s\n", register_msg);
             }
             break;
 
@@ -337,7 +355,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                         size_t msg_len = strlen(unsubscribe_msg);
                         memcpy(p, unsubscribe_msg, msg_len);
                         lws_write(state->wsi_finnhub, p, msg_len, LWS_WRITE_TEXT);
-                        LOG("Unsubscribed from: %s\n", unsubscribe_msg);
+                        LOG_WS("Unsubscribed from: %s\n", unsubscribe_msg);
                     }
                 }
 
@@ -373,7 +391,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
         }
 
         case LWS_CALLBACK_CLIENT_CLOSED:
-            LOG("Local server connection closed\n");
+            LOG_WS("Local server connection closed\n");
             state->wsi_local = NULL;
             handle_local_server_connection(state);  // Attempt to reconnect
             break;
@@ -384,15 +402,13 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
     return 0;
 }
 
-#define FINNHUB_LOG_MODE 1
-
 static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     FinnhubSession *session = (FinnhubSession *)user;
     ScannerState *state = (ScannerState *)lws_context_user(lws_get_context(wsi));
 
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            LOG("Connected to Finnhub\n");
+            LOG_WS("Connected to Finnhub\n");
             lws_callback_on_writable(wsi);
             break;
 
@@ -409,8 +425,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
-                LOG_DEBUG("Subscribed to: %s\n", subscribe_msg);
-                LOG("Total symbols subscribed: %d\n", state->num_symbols);
+                LOG_WS("Subscribed to: %s\n", subscribe_msg);
+                LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
                 if (session->sub_index < state->num_symbols) lws_callback_on_writable(wsi);
             }
@@ -419,12 +435,12 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
         case LWS_CALLBACK_CLIENT_RECEIVE: {
             // Ignore ping messages
             if (len == 4 && strncmp((char *)in, "ping", 4) == 0) {
-                LOG("Ignored ping message.\n");
+                LOG_WS("Ignored ping message.\n");
                 break;
             }
             struct json_object *msg = json_tokener_parse((char *)in);
             if (!msg) {
-                LOG("Failed to parse JSON message: %.*s\n", (int)len, (char *)in);
+                LOG_WS("Failed to parse JSON message: %.*s\n", (int)len, (char *)in);
                 break;
             }
             // If error type, log and ignore
@@ -432,7 +448,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             if (json_object_object_get_ex(msg, "type", &type_obj)) {
                 const char *msg_type = json_object_get_string(type_obj);
                 if (strcmp(msg_type, "error") == 0) {
-                    LOG("Error message received: %s\n", json_object_to_json_string(msg));
+                    LOG_WS("Error message received: %s\n", json_object_to_json_string(msg));
                     json_object_put(msg);
                     break;
                 }
@@ -440,7 +456,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             // Process the "data" array of trades
             struct json_object *data_array;
             if (!json_object_object_get_ex(msg, "data", &data_array) || json_object_get_type(data_array) != json_type_array) {
-                LOG("JSON does not contain a valid 'data' array. Ignoring message.\n");
+                LOG_WS("JSON does not contain a valid 'data' array. Ignoring message.\n");
                 json_object_put(msg);
                 break;
             }
@@ -452,10 +468,10 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                     const char *symbol = json_object_get_string(sym_obj);
                     double price = json_object_get_double(price_obj);
                     int volume = json_object_get_int(vol_obj);
-                    LOG_DEBUG("Received trade: symbol=%s, price=%.2f, volume=%d\n", symbol, price, volume);
+                    LOG_WS("Received trade: symbol=%s, price=%.2f, volume=%d\n", symbol, price, volume);
                     enqueue_trade(state, symbol, price, volume);
                 } else {
-                    LOG("Missing required trade data fields. Skipping entry.\n");
+                    LOG_WS("Missing required trade data fields. Skipping entry.\n");
                 }
             }
             json_object_put(msg);
@@ -463,12 +479,12 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
         }
 
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-            LOG("Finnhub connection error: %s\n", in ? (char *)in : "Unknown error");
+            LOG_WS("Finnhub connection error: %s\n", in ? (char *)in : "Unknown error");
             handle_finnhub_connection(state);
             break;
 
         case LWS_CALLBACK_CLOSED:
-            LOG("Finnhub connection closed\n");
+            LOG_WS("Finnhub connection closed\n");
             handle_finnhub_connection(state);
             break;
 
@@ -479,10 +495,6 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 }
 
 /* ----------------------------- Worker Threads ----------------------------- */
-
-/* ----------------------------- Configuration ------------------------------ */
-#define MIN_TRADE_VOLUME 1           // Ignore individual trades below this volume
-#define MIN_CUMULATIVE_VOLUME 50000  // Only trigger alerts if cumulative volume is above this threshold
 
 DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
     ScannerState *state = (ScannerState *)lpParam;
@@ -505,7 +517,7 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
 
         // Ignore individual trades below the minimum trade volume
         if (trade.volume < MIN_TRADE_VOLUME) {
-            LOG_DEBUG("[trade_processing_thread] Ignoring trade: %s | Price: %.2f | Volume: %d (Below threshold: %d)\n", trade.symbol, trade.price, trade.volume, MIN_TRADE_VOLUME);
+            LOG_DEBUG("Ignoring trade: %s | Price: %.2f | Volume: %d (Below threshold: %d)\n", trade.symbol, trade.price, trade.volume, MIN_TRADE_VOLUME);
             continue;
         }
 
@@ -521,14 +533,14 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         pthread_mutex_unlock(&state->symbols_mutex);
 
         if (idx < 0) {
-            LOG_DEBUG("[trade_processing_thread] Symbol %s not found in tracked symbols\n", trade.symbol);
+            LOG_DEBUG("Symbol %s not found in tracked symbols\n", trade.symbol);
             continue;
         }
 
         pthread_mutex_lock(&state->symbols_mutex);
         uint64_t current_time = get_current_time_ms();
 
-        LOG_DEBUG("[trade_processing_thread] Received trade: %s | Price: %.2f | Volume: %d | Timestamp: %llu\n", trade.symbol, trade.price, trade.volume, current_time);
+        LOG_DEBUG("Received trade: %s | Price: %.2f | Volume: %d | Timestamp: %llu\n", trade.symbol, trade.price, trade.volume, current_time);
 
         // Store trade in circular buffer
         int pos = (state->trade_head[idx] + state->trade_count[idx]) % MAX_TRADES;
@@ -536,59 +548,95 @@ DWORD WINAPI trade_processing_thread(LPVOID lpParam) {
         state->trade_history[idx][pos].timestamp = current_time;
         state->trade_history[idx][pos].volume = trade.volume;
 
-        state->total_volume[idx] += trade.volume;  // Add volume to cumulative total
+        // ✅ Remove cumulative volume tracking (computed dynamically instead)
+        uint64_t five_min_ago = current_time - 300000;  // 5 minutes ago
 
+        // ✅ Compute rolling 5-minute volume
+        uint64_t rolling_5min_volume = 0;
+        for (int i = 0; i < state->trade_count[idx]; i++) {
+            int trade_pos = (state->trade_head[idx] + i) % MAX_TRADES;  // ✅ Correct indexing
+            if (state->trade_history[idx][trade_pos].timestamp >= five_min_ago) {
+                rolling_5min_volume += state->trade_history[idx][trade_pos].volume;
+            }
+        }
+
+        // ✅ Log every minute (5 min)
+        static uint64_t last_log_time = 0;
+        if (current_time - last_log_time >= 300000) {
+            LOG_CLEANER("DEBUG: %s | 5-min Rolling Volume: %lu | Last Trade: %.2f\n", trade.symbol, rolling_5min_volume, trade.price);
+            last_log_time = current_time;  // ✅ Update timestamp after logging
+        }
+
+        // ✅ Update trade count & handle buffer full condition
         if (state->trade_count[idx] < MAX_TRADES) {
             state->trade_count[idx]++;
         } else {
-            // If buffer is full, move head forward and remove oldest trade's volume
-            state->total_volume[idx] -= state->trade_history[idx][state->trade_head[idx]].volume;
+            // ✅ If buffer is full, overwrite oldest trade
             state->trade_head[idx] = (state->trade_head[idx] + 1) % MAX_TRADES;
-            LOG_DEBUG("[trade_processing_thread] Buffer full, overwriting oldest trade at index %d\n", state->trade_head[idx]);
+            LOG_DEBUG("Buffer full, overwriting oldest trade at index %d\n", state->trade_head[idx]);
         }
 
         // Find the price 5 minutes ago
         double old_price = 0.0;
         uint64_t oldest_time = 0;
 
-        if (state->trade_count[idx] > 0) {
-            int oldest_pos = state->trade_head[idx];  // Get oldest stored position
-            old_price = state->trade_history[idx][oldest_pos].price;
-            oldest_time = state->trade_history[idx][oldest_pos].timestamp;
-
-            LOG_DEBUG("[trade_processing_thread] Comparison price for %s from 5 min ago: %.2f (Timestamp: %llu)\n", trade.symbol, old_price, oldest_time);
+        for (int i = 0; i < state->trade_count[idx]; i++) {
+            int trade_pos = (state->trade_head[idx] + i) % MAX_TRADES;
+            if (state->trade_history[idx][trade_pos].timestamp >= five_min_ago) {
+                old_price = state->trade_history[idx][trade_pos].price;
+                oldest_time = state->trade_history[idx][trade_pos].timestamp;
+                break;  // ✅ Stops at the first valid trade in the 5-min window
+            }
         }
 
-        if (old_price > 0) {
+        // Initialize last_alert_price if first trade for this symbol
+        if (state->last_alert_price[idx] == 0.0) {
+            state->last_alert_price[idx] = trade.price;
+            LOG_DEBUG(" Initialized last_alert_price for %s to %.2f\n", trade.symbol, trade.price);
+        }
+
+        if (old_price > 0) {  // ✅ Now old_price is correctly retrieved
             double change = ((trade.price - old_price) / old_price) * 100.0;
 
-            LOG_DEBUG("[trade_processing_thread] %s | Old Price: %.2f -> New Price: %.2f | Change: %.2f%%\n", trade.symbol, old_price, trade.price, change);
+            LOG_DEBUG(" %s | Old Price: %.2f -> New Price: %.2f | Change: %.2f%%\n", trade.symbol, old_price, trade.price, change);
 
-            // Check if price movement and cumulative volume exceed thresholds
-            if (fabs(change) >= PRICE_MOVEMENT && (current_time - state->last_alert_time[idx] >= DEBOUNCE_TIME) && state->total_volume[idx] >= MIN_CUMULATIVE_VOLUME) {
+            int should_alert = 0;
+
+            // Allow first alert without requiring a price breakout
+            if ((change > 0 && trade.price > state->last_alert_price[idx]) || (change < 0 && trade.price < state->last_alert_price[idx])) {
+                should_alert = 1;
+            }
+
+            if (should_alert && fabs(change) >= PRICE_MOVEMENT && (current_time - state->last_alert_time[idx] >= DEBOUNCE_TIME) && state->total_volume[idx] >= MIN_CUMULATIVE_VOLUME) {
                 AlertMsg alert;
                 alert.symbol_index = idx;
                 alert.change = change;
                 alert.price = trade.price;
-                alert.volume = trade.volume;
+                alert.volume = state->total_volume[idx];
 
                 pthread_mutex_lock(&state->alert_queue.mutex);
                 queue_push_alert(&state->alert_queue, &alert);
                 pthread_cond_signal(&state->alert_queue.cond);
                 pthread_mutex_unlock(&state->alert_queue.mutex);
 
-                LOG_DEBUG("[trade_processing_thread] 🚨 ALERT TRIGGERED for %s | Change: %.2f%% | Cumulative Volume: %lu\n", trade.symbol, change, state->total_volume[idx]);
+                LOG_DEBUG("ALERT TRIGGERED for %s | Change: %.2f%% | Cumulative Volume: %lu\n", trade.symbol, change, state->total_volume[idx]);
 
                 state->last_alert_time[idx] = current_time;
+                state->last_alert_price[idx] = trade.price;  // ✅ Store last alerted price
+
             } else {
-                if (state->total_volume[idx] < MIN_CUMULATIVE_VOLUME) {
-                    LOG_DEBUG("[trade_processing_thread] No alert for %s | Cumulative Volume: %lu (Below threshold: %d)\n", trade.symbol, state->total_volume[idx], MIN_CUMULATIVE_VOLUME);
-                } else {
-                    LOG_DEBUG("[trade_processing_thread] No alert for %s | Change: %.2f%% (Threshold: %.2f%%)\n", trade.symbol, change, PRICE_MOVEMENT);
-                }
+                LOG_DEBUG(
+                    "ALERT **NOT** TRIGGERED for %s | Change: %.2f%% | "
+                    "Cumulative Volume: %lu / %d | Time Since Last Alert: %llu ms\n",
+                    trade.symbol, change, state->total_volume[idx], MIN_CUMULATIVE_VOLUME, (current_time - state->last_alert_time[idx]));
+
+                // Additional logging for each failed condition:
+                if (!should_alert) LOG_DEBUG("Reason: should_alert condition failed. Last alert price: %.2f, Current price: %.2f\n", state->last_alert_price[idx], trade.price);
+                if (fabs(change) < PRICE_MOVEMENT) LOG_DEBUG("Reason: Change %.2f%% is below threshold %.2f%%\n", fabs(change), PRICE_MOVEMENT);
+                if ((current_time - state->last_alert_time[idx]) < DEBOUNCE_TIME)
+                    LOG_DEBUG("Reason: Debounce time not met. Time since last alert: %llu ms (Debounce required: %d ms)\n", (current_time - state->last_alert_time[idx]), DEBOUNCE_TIME);
+                if (state->total_volume[idx] < MIN_CUMULATIVE_VOLUME) LOG_DEBUG("Reason: Cumulative volume %lu is below threshold %d\n", state->total_volume[idx], MIN_CUMULATIVE_VOLUME);
             }
-        } else {
-            LOG_DEBUG("[trade_processing_thread] Skipping alert check for %s - Not enough data\n", trade.symbol);
         }
 
         pthread_mutex_unlock(&state->symbols_mutex);
@@ -605,32 +653,30 @@ DWORD WINAPI trade_cleaner_thread(LPVOID lpParam) {
         pthread_mutex_lock(&state->symbols_mutex);
         for (int i = 0; i < state->num_symbols; i++) {
             int removed_count = 0;
-            int removed_volume = 0;
 
             while (state->trade_count[i] > 0) {
                 int oldest_pos = state->trade_head[i];
 
-                if (current_time - state->trade_history[i][oldest_pos].timestamp >= 300000) {
-                    // Remove trade by moving head forward
-                    removed_volume += state->trade_history[i][oldest_pos].volume;
+                uint64_t trade_time = state->trade_history[i][oldest_pos].timestamp;
+
+                if (current_time - trade_time >= 300000) {  // 5 minutes = 300000 ms
+                    // Remove trade from circular buffer
                     state->trade_head[i] = (state->trade_head[i] + 1) % MAX_TRADES;
                     state->trade_count[i]--;
                     removed_count++;
                 } else {
-                    break;  // Stop when we reach a valid (recent) trade
+                    break;  // Stop if we reach a trade within the 5-minute window
                 }
             }
 
-            state->total_volume[i] -= removed_volume;  // Subtract old trades' volume
-
+            // ✅ Log after the while loop (but only if something was removed)
             if (removed_count > 0) {
-                LOG_DEBUG("[trade_cleaner_thread] Removed %d old trades for %s | Remaining: %d | Volume Adjusted: %lu\n", removed_count, state->symbols[i], state->trade_count[i],
-                          state->total_volume[i]);
+                LOG_CLEANER("[trade_cleaner_thread] Symbol: %s | Removed Trades: %d\n", state->symbols[i], removed_count);
             }
         }
         pthread_mutex_unlock(&state->symbols_mutex);
 
-        SLEEP_MS(1000);
+        SLEEP_MS(1000);  // Run cleanup every second
     }
     return 0;
 }
@@ -741,10 +787,12 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
         HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
         HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
+        HANDLE hCleanerThread = CreateThread(NULL, 0, trade_cleaner_thread, &state, 0, NULL);
 #else
-        pthread_t hTradeThread, hAlertThread;
+        pthread_t hTradeThread, hAlertThread, hCleanerThread;
         pthread_create(&hTradeThread, NULL, trade_processing_thread, &state);
         pthread_create(&hAlertThread, NULL, alert_sending_thread, &state);
+        pthread_create(&hCleanerThread, NULL, trade_cleaner_thread, &state);
 #endif
 
         while (!shutdown_flag && !restart_flag) {
@@ -759,9 +807,11 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
         WaitForSingleObject(hTradeThread, INFINITE);
         WaitForSingleObject(hAlertThread, INFINITE);
+        WaitForSingleObject(hCleanerThread, INFINITE);
 #else
         pthread_join(hTradeThread, NULL);
         pthread_join(hAlertThread, NULL);
+        pthread_join(hCleanerThread, NULL);
 #endif
 
         lws_context_destroy(state.context);
