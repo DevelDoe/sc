@@ -91,3 +91,4 @@ dump*
 build.txt
 readme.txt
 temp.js
+.env
