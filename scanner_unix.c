@@ -43,14 +43,26 @@ unsigned long get_current_time_ms() {
 #define DEBUG_MODE 0  // Disable normal debug logs
 
 #define MAX_SYMBOLS 50
-#define PRICE_MOVEMENT 1.0  // 1% price movement
-#define DEBOUNCE_TIME 5000  // 3 seconds in milliseconds
-#define MAX_TRADES 1000     // Upper limit for active trades to avoid memory overload
-#define LOCAL_ADDRESS "127.0.0.1"
+#define PRICE_MOVEMENT 1.0   // 1% price movement
+#define DEBOUNCE_TIME 5000   // 3 seconds in milliseconds
+#define MAX_TRADES 1000      // Upper limit for active trades to avoid memory overload
+#define MAX_QUEUE_SIZE 1024  // For both trade and alert queues
+
 #define LOCAL_PORT 8000
 #define FINNHUB_HOST "ws.finnhub.io"
-#define FINNHUB_PATH "/?token=cv0q3q1r01qo8ssi98cgcv0q3q1r01qo8ssi98d0"
-#define MAX_QUEUE_SIZE 1024  // For both trade and alert queues
+
+char *LOCAL_ADDRESS = NULL;
+char *FINNHUB_PATH = NULL;
+
+void init_config() {
+    LOCAL_ADDRESS = getenv("LOCAL_ADDRESS") ? strdup(getenv("LOCAL_ADDRESS")) : strdup("ws://localhost:8000/ws");
+    FINNHUB_PATH = getenv("FINNHUB_PATH") ? strdup(getenv("FINNHUB_PATH")) : strdup("/?token=YOURTOKEN");
+}
+
+void cleanup_config() {
+    free(LOCAL_ADDRESS);
+    free(FINNHUB_PATH);
+}
 
 #define MIN_TRADE_VOLUME 10          // Ignore individual trades below this volume
 #define MIN_CUMULATIVE_VOLUME 40000  // Only trigger alerts if cumulative volume is above this threshold
@@ -795,6 +807,10 @@ int main(int argc, char *argv[]) {
     }
 
     const char *scanner_id = argv[1];
+
+    init_config();
+    printf("Using LOCAL_ADDRESS: %s\n", LOCAL_ADDRESS);
+    printf("Using FINNHUB_PATH: %s\n", FINNHUB_PATH);
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
