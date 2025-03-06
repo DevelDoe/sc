@@ -53,7 +53,7 @@ unsigned long get_current_time_ms() {
 #define MAX_QUEUE_SIZE 1024  // For both trade and alert queues
 
 #define MIN_TRADE_VOLUME 10          // Ignore individual trades below this volume
-#define MIN_CUMULATIVE_VOLUME 50000  // Only trigger alerts if cumulative volume is above this threshold
+#define MIN_CUMULATIVE_VOLUME 40000  // Only trigger alerts if cumulative volume is above this threshold
 
 /* ----------------------------- LOGGING ------------------------------ */
 #define LOG(fmt, ...) \
