@@ -39,7 +39,7 @@ unsigned long get_current_time_ms() {
 /* ----------------------------- Configuration ------------------------------ */
 #define CLEANER_MODE 0  // Enable only cleaner logs
 #define ALERTS_MODE 0   // Set to 1 to enable alert logs, 0 to disable
-#define WS_LOG_MODE 0   // Set to 1 to enable WebSocket logs, 0 to disable
+#define WS_LOG_MODE 1   // Set to 1 to enable WebSocket logs, 0 to disable
 #define PROCESSING_MODE 1
 #define DEBUG_MODE 0  // Disable normal debug logs
 
