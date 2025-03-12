@@ -361,76 +361,79 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // Create null-terminated copy of the message
+            // ✅ Create null-terminated copy of the message
             char *msg_str = malloc(len + 1);
             strncpy(msg_str, (char *)in, len);
             msg_str[len] = '\0';
 
-            // Try to parse as JSON
-            struct json_object *root = json_tokener_parse(msg_str);
-            if (root) {
-                struct json_object *type_obj;
-                // Check for ping message
-                if (json_object_object_get_ex(root, "type", &type_obj)) {
-                    const char *msg_type = json_object_get_string(type_obj);
-                    if (strcmp(msg_type, "ping") == 0) {
-                        // Create pong response with client_id
-                        const char *pong_fmt = "{\"type\":\"pong\",\"client_id\":\"%s\"}";
-                        char pong_buffer[128];
-                        int pong_len = snprintf(pong_buffer, sizeof(pong_buffer), pong_fmt, state->scanner_id);
-
-                        // Validate buffer size
-                        if (pong_len >= sizeof(pong_buffer)) {
-                            LOG_WS("Pong buffer too small!\n");
-                            json_object_put(root);
-                            free(msg_str);
-                            break;
-                        }
-
-                        unsigned char buf[LWS_PRE + pong_len];
-                        unsigned char *p = &buf[LWS_PRE];
-                        memcpy(p, pong_buffer, pong_len);
-
-                        lws_write(wsi, p, pong_len, LWS_WRITE_TEXT);
-                        LOG_WS("Received ping, sent pong: %s\n", pong_buffer);
-
-                        json_object_put(root);
-                        free(msg_str);
-                        break;
-                    }
+            // ✅ Sanitize message to remove unexpected control characters
+            for (size_t i = 0; i < len; i++) {
+                if (msg_str[i] < 32 || msg_str[i] > 126) {
+                    msg_str[i] = '\0';
+                    break;
                 }
-                json_object_put(root);
             }
 
-            // If not a ping, check for symbols array
-            struct json_object *msg = json_tokener_parse(msg_str);
+            // ✅ Parse JSON once
+            struct json_object *root = json_tokener_parse(msg_str);
+            if (!root) {
+                LOG_WS("❌ Failed to parse JSON. Raw data: %s\n", msg_str);
+                free(msg_str);
+                return 0;
+            }
+
+            struct json_object *type_obj;
+            if (json_object_object_get_ex(root, "type", &type_obj)) {
+                const char *msg_type = json_object_get_string(type_obj);
+                if (strcmp(msg_type, "ping") == 0) {
+                    char pong_buffer[128];
+                    int pong_len = snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
+
+                    // ✅ Validate buffer size
+                    if (pong_len < 0 || pong_len >= sizeof(pong_buffer)) {
+                        LOG_WS("❌ Pong message truncated! Possible buffer overflow.\n");
+                        json_object_put(root);
+                        free(msg_str);
+                        return 0;
+                    }
+
+                    // ✅ Send Pong
+                    lws_write(wsi, pong_buffer, pong_len, LWS_WRITE_TEXT);
+                    LOG_WS("✅ Pong sent: %s\n", pong_buffer);
+
+                    json_object_put(root);
+                    free(msg_str);
+                    return 0;
+                }
+            }
+
+            // ✅ Process symbols (No need to parse again!)
             struct json_object *symbols_array;
-            if (json_object_object_get_ex(msg, "symbols", &symbols_array)) {
+            if (json_object_object_get_ex(root, "symbols", &symbols_array)) {
                 pthread_mutex_lock(&state->symbols_mutex);
 
-                // Unsubscribe from old symbols
+                // ✅ Unsubscribe from old symbols
                 if (state->wsi_finnhub) {
                     for (int i = 0; i < state->num_symbols; i++) {
                         char unsubscribe_msg[128];
                         snprintf(unsubscribe_msg, sizeof(unsubscribe_msg), "{\"type\":\"unsubscribe\",\"symbol\":\"%s\"}", state->symbols[i]);
-                        unsigned char buf[LWS_PRE + 128];
-                        unsigned char *p = &buf[LWS_PRE];
-                        size_t msg_len = strlen(unsubscribe_msg);
-                        memcpy(p, unsubscribe_msg, msg_len);
-                        lws_write(state->wsi_finnhub, p, msg_len, LWS_WRITE_TEXT);
-                        LOG_WS("Unsubscribed from: %s\n", unsubscribe_msg);
+
+                        lws_write(state->wsi_finnhub, unsubscribe_msg, strlen(unsubscribe_msg), LWS_WRITE_TEXT);
+
+                        LOG_WS("🔄 Unsubscribed from: %s\n", unsubscribe_msg);
                     }
                 }
 
-                // Free old symbols
+                // ✅ Free old symbols
                 for (int i = 0; i < state->num_symbols; i++) {
                     free(state->symbols[i]);
                     state->symbols[i] = NULL;
                 }
 
-                // Update symbols list
+                // ✅ Update symbols list
                 state->num_symbols = json_object_array_length(symbols_array);
                 if (state->num_symbols > MAX_SYMBOLS) state->num_symbols = MAX_SYMBOLS;
+
                 for (int i = 0; i < state->num_symbols; i++) {
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
                     state->symbols[i] = strdup(sym);
@@ -440,19 +443,14 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 }
 
                 pthread_mutex_unlock(&state->symbols_mutex);
-
-                // Trigger re-subscription
-                if (state->wsi_finnhub) {
-                    FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
-                    session->sub_index = 0;
-                    lws_callback_on_writable(state->wsi_finnhub);
-                }
+                lws_callback_on_writable(state->wsi_finnhub);
             }
 
-            json_object_put(msg);
+            json_object_put(root);
             free(msg_str);
             break;
         }
+
         case LWS_CALLBACK_CLIENT_CLOSED:
             LOG_WS("Local server connection closed\n");
             state->wsi_local = NULL;
