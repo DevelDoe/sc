@@ -361,7 +361,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // ✅ Make a null-terminated copy of the received message
+            // ✅ Null-terminated copy of received message
             char *msg_str = malloc(len + 1);
             strncpy(msg_str, (char *)in, len);
             msg_str[len] = '\0';
@@ -379,19 +379,25 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 const char *msg_type = json_object_get_string(type_obj);
 
                 if (strcmp(msg_type, "ping") == 0) {
-                    // ✅ Send Pong Response
-                    char pong_buffer[128];
-                    snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
+                    // ✅ Ensure only ONE pong is sent
+                    static unsigned long last_pong_time = 0;
+                    unsigned long now = get_current_time_ms();
 
-                    unsigned char buf[LWS_PRE + 128];
-                    unsigned char *p = &buf[LWS_PRE];
-                    size_t msg_len = strlen(pong_buffer);
-                    memcpy(p, pong_buffer, msg_len);
+                    if (now - last_pong_time > 1000) {  // Prevents rapid duplicate pongs
+                        char pong_buffer[128];
+                        snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
 
-                    if (lws_write(wsi, p, msg_len, LWS_WRITE_TEXT) < 0) {
-                        LOG_WS("❌ Failed to send Pong message.");
-                    } else {
-                        LOG_WS("✅ Pong sent: %s", pong_buffer);
+                        unsigned char buf[LWS_PRE + 128];
+                        unsigned char *p = &buf[LWS_PRE];
+                        size_t msg_len = strlen(pong_buffer);
+                        memcpy(p, pong_buffer, msg_len);
+
+                        if (lws_write(wsi, p, msg_len, LWS_WRITE_TEXT) < 0) {
+                            LOG_WS("❌ Failed to send Pong message.");
+                        } else {
+                            LOG_WS("✅ Pong sent: %s", pong_buffer);
+                            last_pong_time = now;
+                        }
                     }
                 }
             }
