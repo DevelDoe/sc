@@ -361,23 +361,15 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // ✅ Create null-terminated copy of the message
+            // ✅ Make a null-terminated copy of the received message
             char *msg_str = malloc(len + 1);
             strncpy(msg_str, (char *)in, len);
             msg_str[len] = '\0';
 
-            // ✅ Sanitize message to remove unexpected control characters
-            for (size_t i = 0; i < len; i++) {
-                if (msg_str[i] < 32 || msg_str[i] > 126) {
-                    msg_str[i] = '\0';
-                    break;
-                }
-            }
-
-            // ✅ Parse JSON once
+            // ✅ Parse JSON safely
             struct json_object *root = json_tokener_parse(msg_str);
             if (!root) {
-                LOG_WS("❌ Failed to parse JSON. Raw data: %s\n", msg_str);
+                LOG_WS("❌ Failed to parse JSON message.");
                 free(msg_str);
                 return 0;
             }
@@ -387,69 +379,21 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 const char *msg_type = json_object_get_string(type_obj);
 
                 if (strcmp(msg_type, "ping") == 0) {
-                    // ✅ Create a properly formatted Pong message
-                    char pong_buffer[128] = {0};  // ✅ Initialize to prevent garbage data
-                    int pong_len = snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
+                    // ✅ Send Pong Response
+                    char pong_buffer[128];
+                    snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
 
-                    // ✅ Validate snprintf() result
-                    if (pong_len < 0 || pong_len >= sizeof(pong_buffer)) {
-                        LOG_WS("❌ Pong message truncated! Buffer overflow risk.");
-                        json_object_put(root);
-                        free(msg_str);
-                        return 0;
-                    }
+                    unsigned char buf[LWS_PRE + 128];
+                    unsigned char *p = &buf[LWS_PRE];
+                    size_t msg_len = strlen(pong_buffer);
+                    memcpy(p, pong_buffer, msg_len);
 
-                    // ✅ Send the Pong response
-                    int sent_bytes = lws_write(wsi, (unsigned char *)pong_buffer, pong_len, LWS_WRITE_TEXT);
-                    if (sent_bytes < 0) {
-                        LOG_WS("❌ Failed to send Pong response.");
+                    if (lws_write(wsi, p, msg_len, LWS_WRITE_TEXT) < 0) {
+                        LOG_WS("❌ Failed to send Pong message.");
                     } else {
                         LOG_WS("✅ Pong sent: %s", pong_buffer);
                     }
-
-                    json_object_put(root);
-                    free(msg_str);
-                    return 0;
                 }
-            }
-
-            // ✅ Process symbols (No need to parse again!)
-            struct json_object *symbols_array;
-            if (json_object_object_get_ex(root, "symbols", &symbols_array)) {
-                pthread_mutex_lock(&state->symbols_mutex);
-
-                // ✅ Unsubscribe from old symbols
-                if (state->wsi_finnhub) {
-                    for (int i = 0; i < state->num_symbols; i++) {
-                        char unsubscribe_msg[128];
-                        snprintf(unsubscribe_msg, sizeof(unsubscribe_msg), "{\"type\":\"unsubscribe\",\"symbol\":\"%s\"}", state->symbols[i]);
-
-                        lws_write(state->wsi_finnhub, unsubscribe_msg, strlen(unsubscribe_msg), LWS_WRITE_TEXT);
-
-                        LOG_WS("🔄 Unsubscribed from: %s\n", unsubscribe_msg);
-                    }
-                }
-
-                // ✅ Free old symbols
-                for (int i = 0; i < state->num_symbols; i++) {
-                    free(state->symbols[i]);
-                    state->symbols[i] = NULL;
-                }
-
-                // ✅ Update symbols list
-                state->num_symbols = json_object_array_length(symbols_array);
-                if (state->num_symbols > MAX_SYMBOLS) state->num_symbols = MAX_SYMBOLS;
-
-                for (int i = 0; i < state->num_symbols; i++) {
-                    const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
-                    state->symbols[i] = strdup(sym);
-                    state->trade_count[i] = 0;
-                    state->trade_head[i] = 0;
-                    state->last_alert_time[i] = 0;
-                }
-
-                pthread_mutex_unlock(&state->symbols_mutex);
-                lws_callback_on_writable(state->wsi_finnhub);
             }
 
             json_object_put(root);
