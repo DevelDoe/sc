@@ -361,7 +361,6 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // ✅ Null-terminated copy of the received message
             char *msg_str = malloc(len + 1);
             if (!msg_str) {
                 LOG_WS("❌ Memory allocation failed for msg_str");
@@ -370,7 +369,6 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             strncpy(msg_str, (char *)in, len);
             msg_str[len] = '\0';
 
-            // ✅ Parse JSON safely
             struct json_object *root = json_tokener_parse(msg_str);
             if (!root) {
                 LOG_WS("❌ Failed to parse JSON message: %s", msg_str);
@@ -383,15 +381,13 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 const char *msg_type = json_object_get_string(type_obj);
 
                 if (strcmp(msg_type, "ping") == 0) {
-                    // ✅ Ensure only ONE pong is sent per message
                     static unsigned long last_pong_time = 0;
                     unsigned long now = get_current_time_ms();
 
-                    if (now - last_pong_time > 1000) {  // Prevents rapid duplicate pongs
+                    if (now - last_pong_time > 1000) {
                         char pong_buffer[128];
                         int pong_len = snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
 
-                        // ✅ Buffer safety check
                         if (pong_len < sizeof(pong_buffer)) {
                             unsigned char buf[LWS_PRE + pong_len];
                             unsigned char *p = &buf[LWS_PRE];
@@ -414,21 +410,17 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 }
             }
 
-            json_object_put(root);  // ✅ Free the parsed JSON object
+            json_object_put(root);
 
-            // ✅ If not a ping, check for symbols array
+            // ✅ Parse the message again to check for symbols
             struct json_object *msg = json_tokener_parse(msg_str);
-            if (!msg) {
-                LOG_WS("❌ Failed to parse JSON message after pong check.");
-                free(msg_str);
-                break;
-            }
-
             struct json_object *symbols_array;
             if (json_object_object_get_ex(msg, "symbols", &symbols_array)) {
                 pthread_mutex_lock(&state->symbols_mutex);
 
-                // ✅ Unsubscribe from old symbols before re-subscribing
+                // ✅ Log received symbols
+                LOG_WS("Received %d symbols to subscribe", json_object_array_length(symbols_array));
+
                 if (state->wsi_finnhub) {
                     for (int i = 0; i < state->num_symbols; i++) {
                         char unsubscribe_msg[128];
@@ -461,9 +453,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
                     if (sym) {
                         state->symbols[i] = strdup(sym);
-                        state->trade_count[i] = 0;
-                        state->trade_head[i] = 0;
-                        state->last_alert_time[i] = 0;
+                        LOG_WS("✅ Added new symbol: %s", state->symbols[i]);
                     } else {
                         LOG_WS("❌ Failed to retrieve symbol string from JSON");
                     }
@@ -471,11 +461,12 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
 
                 pthread_mutex_unlock(&state->symbols_mutex);
 
-                // ✅ Trigger re-subscription
+                // ✅ Trigger re-subscription on Finnhub
                 if (state->wsi_finnhub) {
                     FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
-                    session->sub_index = 0;
+                    session->sub_index = 0;  // ✅ Ensure we start from the first symbol
                     lws_callback_on_writable(state->wsi_finnhub);
+                    LOG_WS("✅ Triggered Finnhub re-subscription");
                 }
             }
 
