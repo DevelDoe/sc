@@ -361,8 +361,49 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // Expecting a JSON with a "symbols" array
-            struct json_object *msg = json_tokener_parse((char *)in);
+            // Create null-terminated copy of the message
+            char *msg_str = malloc(len + 1);
+            strncpy(msg_str, (char *)in, len);
+            msg_str[len] = '\0';
+
+            // Try to parse as JSON
+            struct json_object *root = json_tokener_parse(msg_str);
+            if (root) {
+                struct json_object *type_obj;
+                // Check for ping message
+                if (json_object_object_get_ex(root, "type", &type_obj)) {
+                    const char *msg_type = json_object_get_string(type_obj);
+                    if (strcmp(msg_type, "ping") == 0) {
+                        // Create pong response with client_id
+                        const char *pong_fmt = "{\"type\":\"pong\",\"client_id\":\"%s\"}";
+                        char pong_buffer[128];
+                        int pong_len = snprintf(pong_buffer, sizeof(pong_buffer), pong_fmt, state->scanner_id);
+
+                        // Validate buffer size
+                        if (pong_len >= sizeof(pong_buffer)) {
+                            LOG_WS("Pong buffer too small!\n");
+                            json_object_put(root);
+                            free(msg_str);
+                            break;
+                        }
+
+                        unsigned char buf[LWS_PRE + pong_len];
+                        unsigned char *p = &buf[LWS_PRE];
+                        memcpy(p, pong_buffer, pong_len);
+
+                        lws_write(wsi, p, pong_len, LWS_WRITE_TEXT);
+                        LOG_WS("Received ping, sent pong: %s\n", pong_buffer);
+
+                        json_object_put(root);
+                        free(msg_str);
+                        break;
+                    }
+                }
+                json_object_put(root);
+            }
+
+            // If not a ping, check for symbols array
+            struct json_object *msg = json_tokener_parse(msg_str);
             struct json_object *symbols_array;
             if (json_object_object_get_ex(msg, "symbols", &symbols_array)) {
                 pthread_mutex_lock(&state->symbols_mutex);
@@ -393,25 +434,25 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 for (int i = 0; i < state->num_symbols; i++) {
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
                     state->symbols[i] = strdup(sym);
-                    // Initialize price tracking values
-                    state->trade_count[i] = 0;  // Reset trade history count
-                    state->trade_head[i] = 0;   // Reset head pointer
+                    state->trade_count[i] = 0;
+                    state->trade_head[i] = 0;
                     state->last_alert_time[i] = 0;
                 }
 
                 pthread_mutex_unlock(&state->symbols_mutex);
 
-                // Trigger re-subscription on Finnhub
+                // Trigger re-subscription
                 if (state->wsi_finnhub) {
                     FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
-                    session->sub_index = 0;  // Reset subscription index
+                    session->sub_index = 0;
                     lws_callback_on_writable(state->wsi_finnhub);
                 }
             }
+
             json_object_put(msg);
+            free(msg_str);
             break;
         }
-
         case LWS_CALLBACK_CLIENT_CLOSED:
             LOG_WS("Local server connection closed\n");
             state->wsi_local = NULL;
