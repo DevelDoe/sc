@@ -385,21 +385,27 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             struct json_object *type_obj;
             if (json_object_object_get_ex(root, "type", &type_obj)) {
                 const char *msg_type = json_object_get_string(type_obj);
+
                 if (strcmp(msg_type, "ping") == 0) {
-                    char pong_buffer[128];
+                    // ✅ Create a properly formatted Pong message
+                    char pong_buffer[128] = {0};  // ✅ Initialize to prevent garbage data
                     int pong_len = snprintf(pong_buffer, sizeof(pong_buffer), "{\"type\":\"pong\",\"client_id\":\"%s\"}", state->scanner_id);
 
-                    // ✅ Validate buffer size
+                    // ✅ Validate snprintf() result
                     if (pong_len < 0 || pong_len >= sizeof(pong_buffer)) {
-                        LOG_WS("❌ Pong message truncated! Possible buffer overflow.\n");
+                        LOG_WS("❌ Pong message truncated! Buffer overflow risk.");
                         json_object_put(root);
                         free(msg_str);
                         return 0;
                     }
 
-                    // ✅ Send Pong
-                    lws_write(wsi, pong_buffer, pong_len, LWS_WRITE_TEXT);
-                    LOG_WS("✅ Pong sent: %s\n", pong_buffer);
+                    // ✅ Send the Pong response
+                    int sent_bytes = lws_write(wsi, (unsigned char *)pong_buffer, pong_len, LWS_WRITE_TEXT);
+                    if (sent_bytes < 0) {
+                        LOG_WS("❌ Failed to send Pong response.");
+                    } else {
+                        LOG_WS("✅ Pong sent: %s", pong_buffer);
+                    }
 
                     json_object_put(root);
                     free(msg_str);
