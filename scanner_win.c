@@ -112,7 +112,7 @@ typedef struct {
     char *symbols[MAX_SYMBOLS];
     int num_symbols;
     unsigned long last_alert_time[MAX_SYMBOLS];
-    double last_alert_price[MAX_SYMBOLS];  // NEW: Store last alert price
+    double last_alert_price[MAX_SYMBOLS];
 
     struct {
         double price;
@@ -134,6 +134,9 @@ typedef struct {
     pthread_mutex_t symbols_mutex;
     volatile int shutdown_flag;
     char scanner_id[64];
+
+    // ✅ NEW: Track last received ping timestamp
+    unsigned long last_ping_time;
 
 } ScannerState;
 
@@ -195,6 +198,8 @@ static void initialize_state(ScannerState *state) {
     // Initialize alert queue mutex/cond
     pthread_mutex_init(&state->alert_queue.mutex, NULL);
     pthread_cond_init(&state->alert_queue.cond, NULL);
+
+    state->last_ping_time = get_current_time_ms();
 }
 
 static void cleanup_state(ScannerState *state) {
@@ -328,6 +333,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
             LOG_WS("Connected to local server\n");
             state->wsi_local = wsi;
+            state->last_ping_time = get_current_time_ms();
             {
                 char register_msg[128];
                 snprintf(register_msg, sizeof(register_msg), "{\"client_id\":\"%s\"}", state->scanner_id);
@@ -352,12 +358,11 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
             struct json_object *root = json_tokener_parse(msg_str);
             if (root) {
                 struct json_object *type_obj;
-                // Check for ping message
 
-                // Handle ping message
                 if (json_object_object_get_ex(root, "type", &type_obj)) {
                     const char *msg_type = json_object_get_string(type_obj);
                     if (strcmp(msg_type, "ping") == 0) {
+                        state->last_ping_time = get_current_time_ms();  // ✅ Update ping time
                         // Create pong message with client_id
                         const char *pong_fmt = "{\"type\":\"pong\",\"client_id\":\"%s\"}";
                         char pong_buffer[128];
@@ -774,6 +779,29 @@ DWORD WINAPI alert_sending_thread(LPVOID lpParam) {
     return 0;
 }
 
+THREAD_FUNC connection_watchdog_thread(void *arg) {
+    ScannerState *state = (ScannerState *)arg;
+
+    while (!state->shutdown_flag) {
+        unsigned long now = get_current_time_ms();
+
+        // ✅ Add sanity check for valid timestamp
+        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 30000) {
+            LOG_WS("⚠️ No ping received in 30s, reconnecting...\n");
+
+            // ✅ Proper connection closure
+            if (state->wsi_local) {
+                lws_set_timeout(state->wsi_local, 1, LWS_TO_KILL_ASYNC);
+                state->wsi_local = NULL;
+                state->last_ping_time = get_current_time_ms();  // Reset timer
+            }
+        }
+
+        SLEEP_MS(5000);
+    }
+    return 0;
+}
+
 /* ----------------------------- Signal Handling ----------------------------- */
 volatile sig_atomic_t shutdown_flag = 0;
 volatile sig_atomic_t restart_flag = 0;
@@ -830,11 +858,15 @@ int main(int argc, char *argv[]) {
         HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
         HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
         HANDLE hCleanerThread = CreateThread(NULL, 0, trade_cleaner_thread, &state, 0, NULL);
+        HANDLE hWatchdogThread = CreateThread(NULL, 0, connection_watchdog_thread, &state, 0, NULL);
 #else
         pthread_t hTradeThread, hAlertThread, hCleanerThread;
         pthread_create(&hTradeThread, NULL, trade_processing_thread, &state);
         pthread_create(&hAlertThread, NULL, alert_sending_thread, &state);
         pthread_create(&hCleanerThread, NULL, trade_cleaner_thread, &state);
+        pthread_t hWatchdogThread;
+        pthread_create(&hWatchdogThread, NULL, connection_watchdog_thread, &state);
+
 #endif
 
         while (!shutdown_flag && !restart_flag) {
@@ -850,10 +882,12 @@ int main(int argc, char *argv[]) {
         WaitForSingleObject(hTradeThread, INFINITE);
         WaitForSingleObject(hAlertThread, INFINITE);
         WaitForSingleObject(hCleanerThread, INFINITE);
+        WaitForSingleObject(hWatchdogThread, INFINITE);
 #else
         pthread_join(hTradeThread, NULL);
         pthread_join(hAlertThread, NULL);
         pthread_join(hCleanerThread, NULL);
+        pthread_join(hWatchdogThread, NULL);
 #endif
 
         lws_context_destroy(state.context);

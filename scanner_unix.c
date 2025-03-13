@@ -128,6 +128,8 @@ typedef struct {
     // NEW: Store the last alerted price per symbol
     double last_alert_price[MAX_SYMBOLS];
 
+    unsigned long last_ping_time;  // Track last received ping timestamp
+
     // Trade storage (circular buffer for each symbol)
     struct {
         double price;
@@ -202,6 +204,9 @@ static void queue_pop_alert(AlertQueue *q, AlertMsg *alert) {
 static void initialize_state(ScannerState *state) {
     memset(state, 0, sizeof(*state));
     pthread_mutex_init(&state->symbols_mutex, NULL);
+
+    // Initialize last_ping_time with current time
+    state->last_ping_time = get_current_time_ms();
 
     // Initialize trade queue mutex/cond
     pthread_mutex_init(&state->trade_queue.mutex, NULL);
@@ -346,6 +351,10 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
             LOG_WS("Connected to local server\n");
             state->wsi_local = wsi;
+
+            // ✅ Initialize ping timer on connection
+            state->last_ping_time = get_current_time_ms();
+
             {
                 char register_msg[128];
                 snprintf(register_msg, sizeof(register_msg), "{\"client_id\":\"%s\"}", state->scanner_id);
@@ -381,6 +390,9 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 const char *msg_type = json_object_get_string(type_obj);
 
                 if (strcmp(msg_type, "ping") == 0) {
+                    // ✅ Update ping timestamp on reception
+                    state->last_ping_time = get_current_time_ms();
+
                     static unsigned long last_pong_time = 0;
                     unsigned long now = get_current_time_ms();
 
@@ -849,6 +861,28 @@ void *alert_sending_thread(void *lpParam) {
     return 0;
 }
 
+THREAD_FUNC connection_watchdog_thread(void *arg) {
+    ScannerState *state = (ScannerState *)arg;
+
+    while (!state->shutdown_flag) {
+        unsigned long now = get_current_time_ms();
+
+        // Check if no ping was received for 30 seconds (valid timestamp)
+        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 30000) {
+            LOG_WS("⚠️ No ping received in 30s, reconnecting...\n");
+
+            // Proper connection closure for both platforms
+            if (state->wsi_local) {
+                lws_set_timeout(state->wsi_local, 1, LWS_TO_KILL_ASYNC);
+                state->wsi_local = NULL;
+                state->last_ping_time = get_current_time_ms();  // Reset timer
+            }
+        }
+
+        SLEEP_MS(5000);  // Check every 5 seconds
+    }
+    return 0;
+}
 /* ----------------------------- Signal Handling -----------------------------
  */
 volatile sig_atomic_t shutdown_flag = 0;
@@ -910,11 +944,13 @@ int main(int argc, char *argv[]) {
         HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
         HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
         HANDLE hCleanerThread = CreateThread(NULL, 0, trade_cleaner_thread, &state, 0, NULL);
+        HANDLE hWatchdogThread = CreateThread(NULL, 0, connection_watchdog_thread, &state, 0, NULL);
 #else
-        pthread_t hTradeThread, hAlertThread, hCleanerThread;
+        pthread_t hTradeThread, hAlertThread, hCleanerThread, hWatchdogThread;
         pthread_create(&hTradeThread, NULL, trade_processing_thread, &state);
         pthread_create(&hAlertThread, NULL, alert_sending_thread, &state);
         pthread_create(&hCleanerThread, NULL, trade_cleaner_thread, &state);
+        pthread_create(&hWatchdogThread, NULL, connection_watchdog_thread, &state);
 #endif
 
         while (!shutdown_flag && !restart_flag) {
@@ -930,10 +966,12 @@ int main(int argc, char *argv[]) {
         WaitForSingleObject(hTradeThread, INFINITE);
         WaitForSingleObject(hAlertThread, INFINITE);
         WaitForSingleObject(hCleanerThread, INFINITE);
+        WaitForSingleObject(hWatchdogThread, INFINITE);
 #else
         pthread_join(hTradeThread, NULL);
         pthread_join(hAlertThread, NULL);
         pthread_join(hCleanerThread, NULL);
+        pthread_join(hWatchdogThread, NULL);
 #endif
 
         lws_context_destroy(state.context);
