@@ -869,7 +869,8 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
 
         // Check if no ping was received for 30 seconds (valid timestamp)
         if (state->last_ping_time > 0 && (now - state->last_ping_time) > 30000) {
-            LOG_WS("⚠️ No ping received in 30s, reconnecting...\n");
+            LOG_WS("⚠️ No ping received in 30s, rebooting program...\n");
+            exit(42);  // Use a unique exit code to indicate a reboot is needed
 
             // Proper connection closure for both platforms
             if (state->wsi_local) {
