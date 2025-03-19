@@ -785,17 +785,23 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
     while (!state->shutdown_flag) {
         unsigned long now = get_current_time_ms();
 
-        // ✅ Add sanity check for valid timestamp
+        // ✅ Sanity check for valid timestamp
         if (state->last_ping_time > 0 && (now - state->last_ping_time) > 30000) {
             LOG_WS("⚠️ No ping received in 30s, rebooting program...\n");
-            exit(42);  // Use a unique exit code to indicate a reboot is needed
 
-            // ✅ Proper connection closure
+            // ✅ Properly close connection before exiting
             if (state->wsi_local) {
                 lws_set_timeout(state->wsi_local, 1, LWS_TO_KILL_ASYNC);
                 state->wsi_local = NULL;
-                state->last_ping_time = get_current_time_ms();  // Reset timer
             }
+
+            state->last_ping_time = get_current_time_ms();  // Reset timer
+
+            // ✅ Ensure thread cleanup happens (if needed)
+            state->shutdown_flag = 1;
+
+            // ✅ Exit AFTER cleanup
+            exit(42);  // Unique exit code for reboot
         }
 
         SLEEP_MS(5000);
