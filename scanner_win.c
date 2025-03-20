@@ -51,8 +51,8 @@ unsigned long get_current_time_ms() {
 #define FINNHUB_URI "wss://ws.finnhub.io/?token=your_token"
 #define MAX_QUEUE_SIZE 1024  // For both trade and alert queues
 
-#define MIN_TRADE_VOLUME 10          // Ignore individual trades below this volume
-#define MIN_CUMULATIVE_VOLUME 10000  // Only trigger alerts if cumulative volume is above this threshold
+#define MIN_TRADE_VOLUME 10         // Ignore individual trades below this volume
+#define MIN_CUMULATIVE_VOLUME 5000  // Only trigger alerts if cumulative volume is above this threshold
 
 /* ----------------------------- LOGGING ------------------------------ */
 #define LOG(fmt, ...) \
