@@ -64,7 +64,7 @@ void cleanup_config() {
     free(FINNHUB_PATH);
 }
 
-#define MIN_TRADE_VOLUME 10          // Ignore individual trades below this volume
+#define MIN_TRADE_VOLUME 1           // Ignore individual trades below this volume
 #define MIN_CUMULATIVE_VOLUME 10000  // Only trigger alerts if cumulative volume is above this threshold
 
 /* ----------------------------- LOGGING ------------------------------ */
