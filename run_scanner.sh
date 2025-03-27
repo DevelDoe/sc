@@ -28,4 +28,4 @@ while true; do
         echo "$(date +"%Y-%m-%d %H:%M:%S") - Scanner crashed. Restarting in $RANDOM_DELAY seconds..." | tee -a $LOG_FILE
         sleep $RANDOM_DELAY
     fi
-done
+done 
