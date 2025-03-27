@@ -162,6 +162,12 @@ typedef struct {
     int sub_index;
 } FinnhubSession;
 
+/* ----------------------------- Prototypes ---------------------------- */
+
+static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len);
+static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len);
+THREAD_FUNC manual_subscribe_thread(void *arg);
+
 /* ----------------------------- Queue Functions ---------------------------- */
 // TradeQueue functions
 static int trade_queue_empty(TradeQueue *q) { return q->head == q->tail; }
@@ -906,6 +912,8 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
             SLEEP_MS(1000);  // Delay watchdog until subs are done
             continue;
         }
+
+        unsigned long now = get_current_time_ms();  // ✅ Declare now here
 
         // Grace period: ignore missing pings for 20 seconds after receiving new symbols
         if ((now - state->last_symbol_update_time) < 20000) {
