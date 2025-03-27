@@ -861,77 +861,75 @@ int main(int argc, char *argv[]) {
     signal(SIGSEGV, handle_signal);
     signal(SIGABRT, handle_signal);
 
-    while (!shutdown_flag) {
-        ScannerState state;
-        initialize_state(&state);
+    ScannerState state;  // ✅ Allocate once
+    initialize_state(&state);
 
-        strncpy(state.scanner_id, scanner_id, sizeof(state.scanner_id) - 1);
-        state.scanner_id[sizeof(state.scanner_id) - 1] = '\0';
+    strncpy(state.scanner_id, scanner_id, sizeof(state.scanner_id) - 1);
+    state.scanner_id[sizeof(state.scanner_id) - 1] = '\0';
 
-        struct lws_protocols protocols[] = {{"local-server", local_server_callback, 0, 0}, {"finnhub", finnhub_callback, sizeof(FinnhubSession), 0}, {NULL, NULL, 0, 0}};
+    struct lws_protocols protocols[] = {{"local-server", local_server_callback, 0, 0}, {"finnhub", finnhub_callback, sizeof(FinnhubSession), 0}, {NULL, NULL, 0, 0}};
 
-        struct lws_context_creation_info info = {0};
-        info.protocols = protocols;
-        info.user = &state;
-        info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    struct lws_context_creation_info info = {0};
+    info.protocols = protocols;
+    info.user = &state;
+    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
-        state.context = lws_create_context(&info);
-        if (!state.context) {
-            LOG("lws_create_context failed\n");
-            cleanup_state(&state);
-            return -1;
-        }
-
-        LOG("Scanner ID: %s\n", scanner_id);
-
-        handle_local_server_connection(&state);
-        handle_finnhub_connection(&state);
-
-#ifdef _WIN32
-        HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
-        HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
-        HANDLE hCleanerThread = CreateThread(NULL, 0, trade_cleaner_thread, &state, 0, NULL);
-        HANDLE hWatchdogThread = CreateThread(NULL, 0, connection_watchdog_thread, &state, 0, NULL);
-#else
-        pthread_t hTradeThread, hAlertThread, hCleanerThread;
-        pthread_create(&hTradeThread, NULL, trade_processing_thread, &state);
-        pthread_create(&hAlertThread, NULL, alert_sending_thread, &state);
-        pthread_create(&hCleanerThread, NULL, trade_cleaner_thread, &state);
-        pthread_t hWatchdogThread;
-        pthread_create(&hWatchdogThread, NULL, connection_watchdog_thread, &state);
-
-#endif
-
-        while (!shutdown_flag && !restart_flag) {
-            lws_service(state.context, 50);
-            LOG_DEBUG("Running WebSocket event loop\n");
-        }
-
-        state.shutdown_flag = 1;
-        pthread_cond_broadcast(&state.trade_queue.cond);
-        pthread_cond_broadcast(&state.alert_queue.cond);
-
-#ifdef _WIN32
-        WaitForSingleObject(hTradeThread, INFINITE);
-        WaitForSingleObject(hAlertThread, INFINITE);
-        WaitForSingleObject(hCleanerThread, INFINITE);
-        WaitForSingleObject(hWatchdogThread, INFINITE);
-#else
-        pthread_join(hTradeThread, NULL);
-        pthread_join(hAlertThread, NULL);
-        pthread_join(hCleanerThread, NULL);
-        pthread_join(hWatchdogThread, NULL);
-#endif
-
-        lws_context_destroy(state.context);
+    state.context = lws_create_context(&info);
+    if (!state.context) {
+        LOG("lws_create_context failed\n");
         cleanup_state(&state);
-
-        if (restart_flag) {
-            LOG("Restarting program due to crash...\n");
-            restart_flag = 0;
-        }
-
-        LOG("Program shutdown gracefully.\n");
-        return 0;
+        return -1;
     }
+
+    LOG("Scanner ID: %s\n", scanner_id);
+
+    handle_local_server_connection(&state);
+    handle_finnhub_connection(&state);
+
+#ifdef _WIN32
+    HANDLE hTradeThread = CreateThread(NULL, 0, trade_processing_thread, &state, 0, NULL);
+    HANDLE hAlertThread = CreateThread(NULL, 0, alert_sending_thread, &state, 0, NULL);
+    HANDLE hCleanerThread = CreateThread(NULL, 0, trade_cleaner_thread, &state, 0, NULL);
+    HANDLE hWatchdogThread = CreateThread(NULL, 0, connection_watchdog_thread, &state, 0, NULL);
+#else
+    pthread_t hTradeThread, hAlertThread, hCleanerThread, hWatchdogThread;
+    pthread_create(&hTradeThread, NULL, trade_processing_thread, &state);
+    pthread_create(&hAlertThread, NULL, alert_sending_thread, &state);
+    pthread_create(&hCleanerThread, NULL, trade_cleaner_thread, &state);
+    pthread_create(&hWatchdogThread, NULL, connection_watchdog_thread, &state);
+#endif
+
+    // ✅ Main LWS loop
+    while (!shutdown_flag && !restart_flag) {
+        lws_service(state.context, 50);  // Keep LWS timers and events running
+    }
+
+    // ✅ Signal threads to shut down
+    state.shutdown_flag = 1;
+    pthread_cond_broadcast(&state.trade_queue.cond);
+    pthread_cond_broadcast(&state.alert_queue.cond);
+
+#ifdef _WIN32
+    WaitForSingleObject(hTradeThread, INFINITE);
+    WaitForSingleObject(hAlertThread, INFINITE);
+    WaitForSingleObject(hCleanerThread, INFINITE);
+    WaitForSingleObject(hWatchdogThread, INFINITE);
+#else
+    pthread_join(hTradeThread, NULL);
+    pthread_join(hAlertThread, NULL);
+    pthread_join(hCleanerThread, NULL);
+    pthread_join(hWatchdogThread, NULL);
+#endif
+
+    lws_context_destroy(state.context);
+    cleanup_state(&state);
+
+    if (restart_flag) {
+        LOG("Restarting program due to crash...\n");
+        restart_flag = 0;
+        // In a restart scenario, you could add `execv(argv[0], argv);` here.
+    }
+
+    LOG("Program shutdown gracefully.\n");
+    return 0;
 }
