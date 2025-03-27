@@ -609,6 +609,11 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             handle_finnhub_connection(state);
             break;
 
+        case LWS_CALLBACK_TIMER:
+            LOG_WS("⏱️ Timer fired — requesting writable callback to send next subscription");
+            lws_callback_on_writable(wsi);
+            break;
+
         default:
             break;
     }
