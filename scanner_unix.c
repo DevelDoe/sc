@@ -544,7 +544,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 if (session->sub_index < state->num_symbols) {
                     LOG_WS("🟢 [%s] Setting timer for next subscription (index %d)", state->scanner_id, session->sub_index);
                     // Delay next subscription by 50ms
-                    lws_set_timer_usecs(wsi, 50000);
+                    lws_set_timer_usecs(wsi, 500000);
                 } else {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active\n");
