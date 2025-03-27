@@ -500,7 +500,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
         case LWS_CALLBACK_CLIENT_CLOSED:
             LOG_WS("Local server connection closed\n");
             state->wsi_local = NULL;
-            handle_local_server_connection(state);  // Attempt to reconnect
+            handle_local_server_connection(state);
             break;
 
         default:
