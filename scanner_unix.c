@@ -287,6 +287,13 @@ static int handle_finnhub_connection(ScannerState *state) {
         return -1;
     }
 
+    // 🔴 Clean up any existing connection first
+    if (state->wsi_finnhub) {
+        LOG_WS("Closing existing Finnhub connection before reconnecting...\n");
+        lws_cancel_service(state->context);  // Force event loop to close old connection
+        state->wsi_finnhub = NULL;
+    }
+
     struct lws_client_connect_info ccinfo = {0};
     ccinfo.context = state->context;
     ccinfo.address = FINNHUB_HOST;
@@ -297,16 +304,14 @@ static int handle_finnhub_connection(ScannerState *state) {
     ccinfo.protocol = "finnhub";
     ccinfo.ssl_connection = LCCSCF_USE_SSL;
 
+    // 🔴 Create new connection
     state->wsi_finnhub = lws_client_connect_via_info(&ccinfo);
     if (!state->wsi_finnhub) {
-        LOG_WS(
-            "Failed to initiate Finnhub connection: host=%s, path=%s, port=%d, "
-            "errno=%d (%s)\n",
-            FINNHUB_HOST, FINNHUB_PATH, ccinfo.port, errno, strerror(errno));
+        LOG_WS("Failed to initiate Finnhub connection: host=%s, path=%s, errno=%d (%s)\n", FINNHUB_HOST, FINNHUB_PATH, errno, strerror(errno));
         return -1;
     }
 
-    LOG_WS("Finnhub connection initiated successfully\n");
+    LOG_WS("Finnhub connection initiated successfully (new wsi: %p)\n", state->wsi_finnhub);
     return 0;
 }
 
@@ -501,13 +506,16 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
 
                 pthread_mutex_unlock(&state->symbols_mutex);
 
-                // ✅ Trigger re-subscription on Finnhub
+                /// Restart subscriptions on the ACTIVE Finnhub connection
                 if (state->wsi_finnhub) {
                     FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
-                    session->sub_index = 0;
-                    lws_set_timer_usecs(state->wsi_finnhub, 1);  // Trigger the timer immediately
-                    LOG_WS("🟢 [%s] Restarted subscription timer for new symbols", state->scanner_id);
+                    session->sub_index = 0;                      // Reset subscription counter
+                    lws_set_timer_usecs(state->wsi_finnhub, 1);  // Start timer immediately
+                    LOG_WS("🟢 [%s] Timer RESTARTED for new symbols", state->scanner_id);
+                } else {
+                    LOG_WS("❌ Finnhub connection not active; cannot subscribe");
                 }
+                break;
             }
 
             json_object_put(msg);
@@ -536,8 +544,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
             LOG_WS("Connected to Finnhub");
-            // Start timer loop after connect
-            lws_set_timer_usecs(wsi, 1);  // start immediately
+            state->wsi_finnhub = wsi;     // <-- CRITICAL: Update the active connection
+            lws_set_timer_usecs(wsi, 1);  // Start timer immediately
             break;
 
         case LWS_CALLBACK_TIMER:
