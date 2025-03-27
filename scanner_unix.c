@@ -465,6 +465,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 // ✅ Update symbols list
                 state->num_symbols = json_object_array_length(symbols_array);
                 if (state->num_symbols > MAX_SYMBOLS) state->num_symbols = MAX_SYMBOLS;
+                LOG_WS("🔄 [%s] Scanner received %d symbols to subscribe", state->scanner_id, state->num_symbols);
 
                 // ✅ Mark the time we received new symbols (for watchdog grace period)
                 state->last_symbol_update_time = get_current_time_ms();
@@ -485,9 +486,9 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 // ✅ Trigger re-subscription on Finnhub
                 if (state->wsi_finnhub) {
                     FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
-                    session->sub_index = 0;  // ✅ Ensure we start from the first symbol
+                    session->sub_index = 0;
                     lws_callback_on_writable(state->wsi_finnhub);
-                    LOG_WS("✅ Triggered Finnhub re-subscription");
+                    LOG_WS("🟢 [%s] Initial trigger: lws_callback_on_writable()", state->scanner_id);
                 }
             }
 
@@ -526,17 +527,25 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 pthread_mutex_lock(&state->symbols_mutex);
                 if (session->sub_index < state->num_symbols) {
                     snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
+
+                    LOG_WS("📡 [%s] Subscribing to symbol %d/%d: %s", state->scanner_id, session->sub_index + 1, state->num_symbols, state->symbols[session->sub_index]);
                 }
                 pthread_mutex_unlock(&state->symbols_mutex);
+
                 unsigned char buf[LWS_PRE + 128];
                 unsigned char *p = &buf[LWS_PRE];
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
-                LOG_WS("Subscribed to: %s\n", subscribe_msg);
+
                 LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
-                if (session->sub_index < state->num_symbols) lws_callback_on_writable(wsi);
+
+                if (session->sub_index < state->num_symbols) {
+                    LOG_WS("🟢 [%s] Requested lws_callback_on_writable (index %d)", state->scanner_id, session->sub_index);
+                    lws_callback_on_writable(wsi);
+                }
+
                 if (session->sub_index >= state->num_symbols) {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active\n");
