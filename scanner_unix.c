@@ -1,5 +1,6 @@
 #include <json-c/json.h>
 #include <libwebsockets.h>
+#include <libwebsockets/lws-vhost.h>  // for lws_vhost_creation_info
 #include <math.h>
 #include <pthread.h>
 #include <signal.h>
@@ -231,12 +232,18 @@ static void initialize_state(ScannerState *state) {
     info.uid = -1;
     info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;  // ✅ ADD THIS LINE
 
-    state->context = lws_create_context(&info);
-    if (!state->context) {
-        LOG_WS("❌ Failed to create LWS context!");
+    struct lws_vhost_creation_info vhost_info;
+    memset(&vhost_info, 0, sizeof(vhost_info));
+    vhost_info.port = CONTEXT_PORT_NO_LISTEN;
+    vhost_info.protocols = protocols;
+    vhost_info.name = "default";
+
+    struct lws_vhost *vhost = lws_create_vhost(context, &vhost_info);
+    if (!vhost) {
+        LOG_WS("❌ Failed to create vhost!");
         exit(1);
     } else {
-        LOG_WS("✅ LWS context initialized with timers enabled");
+        LOG_WS("✅ LWS vhost created — timers now work properly!");
     }
 }
 
