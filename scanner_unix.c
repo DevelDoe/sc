@@ -162,6 +162,8 @@ typedef struct {
     int sub_index;
 } FinnhubSession;
 
+LOG_WS("LWS version: %s", lws_get_library_version());
+
 /* ----------------------------- Queue Functions ---------------------------- */
 // TradeQueue functions
 static int trade_queue_empty(TradeQueue *q) { return q->head == q->tail; }
@@ -204,22 +206,38 @@ static void queue_pop_alert(AlertQueue *q, AlertMsg *alert) {
 }
 
 /* ----------------------------- Initialization ----------------------------- */
+static struct lws_protocols protocols[] = {
+    {.name = "finnhub", .callback = finnhub_callback, .per_session_data_size = sizeof(FinnhubSession), .rx_buffer_size = 4096},
+    {.name = "local-server", .callback = local_server_callback, .per_session_data_size = 0, .rx_buffer_size = 1024},
+    {NULL, NULL, 0, 0}  // terminator
+};
+
 static void initialize_state(ScannerState *state) {
     memset(state, 0, sizeof(*state));
     pthread_mutex_init(&state->symbols_mutex, NULL);
-
-    // Initialize last_ping_time with current time
-    state->last_ping_time = get_current_time_ms();
-
-    // Initialize trade queue mutex/cond
     pthread_mutex_init(&state->trade_queue.mutex, NULL);
     pthread_cond_init(&state->trade_queue.cond, NULL);
-
-    // Initialize alert queue mutex/cond
     pthread_mutex_init(&state->alert_queue.mutex, NULL);
     pthread_cond_init(&state->alert_queue.cond, NULL);
 
+    state->last_ping_time = get_current_time_ms();
     state->last_symbol_update_time = get_current_time_ms();
+
+    // ✅ LWS context setup with proper protocol list
+    struct lws_context_creation_info info = {0};
+    info.port = CONTEXT_PORT_NO_LISTEN;  // We're not a server
+    info.protocols = protocols;          // ✅ This enables timers
+    info.gid = -1;
+    info.uid = -1;
+    info.options = 0;
+
+    state->context = lws_create_context(&info);
+    if (!state->context) {
+        LOG_WS("❌ Failed to create LWS context!");
+        exit(1);
+    } else {
+        LOG_WS("✅ LWS context initialized with timers enabled");
+    }
 }
 
 static void cleanup_state(ScannerState *state) {
