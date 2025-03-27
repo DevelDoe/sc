@@ -15,9 +15,10 @@ while true; do
 
     if [ $EXIT_CODE -eq 0 ]; then
         echo "$(date +"%Y-%m-%d %H:%M:%S") - Scanner exited normally. Restarting in 5 seconds..." | tee -a $LOG_FILE
+        sleep 5
     else
-        echo "$(date +"%Y-%m-%d %H:%M:%S") - Scanner crashed or exited abnormally. Restarting in 5 seconds..." | tee -a $LOG_FILE
+        RANDOM_DELAY=$((RANDOM % 26 + 5)) # Random delay between 5 and 30 seconds
+        echo "$(date +"%Y-%m-%d %H:%M:%S") - Scanner crashed. Restarting in $RANDOM_DELAY seconds..." | tee -a $LOG_FILE
+        sleep $RANDOM_DELAY
     fi
-
-    sleep 5
 done
