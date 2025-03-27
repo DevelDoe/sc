@@ -1,9 +1,13 @@
 #!/bin/bash
 
 LOG_FILE="/var/log/scanner.log"
-EXECUTABLE="/opt/scanner/scanner_unix"
 
-echo "$(date +"%Y-%m-%d %H:%M:%S") - Starting scanner..." | tee -a $LOG_FILE
+# Extract scanner name from hostname (e.g., ss1, ss2, etc.)
+SCANNER_ID=$(hostname | cut -d'.' -f1)  # or manually set if needed
+EXECUTABLE="/opt/scanner/${SCANNER_ID}_unix"
+
+echo "$(date +"%Y-%m-%d %H:%M:%S") - Starting scanner: $SCANNER_ID" | tee -a $LOG_FILE
+echo "$(date +"%Y-%m-%d %H:%M:%S") - Using executable: $EXECUTABLE" | tee -a $LOG_FILE
 echo "$(date +"%Y-%m-%d %H:%M:%S") - Environment variables:" | tee -a $LOG_FILE
 env | tee -a $LOG_FILE
 
@@ -17,8 +21,8 @@ while true; do
         echo "$(date +"%Y-%m-%d %H:%M:%S") - Scanner exited normally. Restarting in 5 seconds..." | tee -a $LOG_FILE
         sleep 5
     else
-        RANDOM_DELAY=$((RANDOM % 26 + 5)) # Random delay between 5 and 30 seconds
+        RANDOM_DELAY=$((RANDOM % 26 + 5))
         echo "$(date +"%Y-%m-%d %H:%M:%S") - Scanner crashed. Restarting in $RANDOM_DELAY seconds..." | tee -a $LOG_FILE
         sleep $RANDOM_DELAY
     fi
-done
+done 
