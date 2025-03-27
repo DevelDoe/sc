@@ -4,6 +4,13 @@ LOG_FILE="/var/log/scanner.log"
 SCANNER_ID=$(hostname | cut -d'.' -f1)
 EXECUTABLE="/opt/scanner/scanner_unix"
 
+# Load environment variables if .env exists
+ENV_FILE="/opt/scanner/.env"
+if [ -f "$ENV_FILE" ]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S") - Loading environment from $ENV_FILE" | tee -a $LOG_FILE
+    export $(grep -v '^#' "$ENV_FILE" | xargs)
+fi
+
 echo "$(date +"%Y-%m-%d %H:%M:%S") - Starting scanner: $SCANNER_ID" | tee -a $LOG_FILE
 echo "$(date +"%Y-%m-%d %H:%M:%S") - Using executable: $EXECUTABLE $SCANNER_ID" | tee -a $LOG_FILE
 echo "$(date +"%Y-%m-%d %H:%M:%S") - Environment variables:" | tee -a $LOG_FILE
