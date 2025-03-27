@@ -152,6 +152,8 @@ typedef struct {
     volatile int shutdown_flag;
     char scanner_id[64];
 
+    volatile int subscriptions_complete;
+
 } ScannerState;
 
 // Session data for Finnhub connection
@@ -528,6 +530,10 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
                 if (session->sub_index < state->num_symbols) lws_callback_on_writable(wsi);
+                if (session->sub_index >= state->num_symbols) {
+                    state->subscriptions_complete = 1;
+                    LOG_WS("✅ All subscriptions complete, watchdog is now active\n");
+                }
             }
             break;
 
@@ -865,25 +871,22 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
     ScannerState *state = (ScannerState *)arg;
 
     while (!state->shutdown_flag) {
-        unsigned long now = get_current_time_ms();
-
-        // Check if no ping was received for 30 seconds (valid timestamp)
-        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 60000) {
-            LOG_WS("⚠️ No ping received in 60s, rebooting program...\n");
-            exit(42);  // Use a unique exit code to indicate a reboot is needed
-
-            // Proper connection closure for both platforms
-            if (state->wsi_local) {
-                lws_set_timeout(state->wsi_local, 1, LWS_TO_KILL_ASYNC);
-                state->wsi_local = NULL;
-                state->last_ping_time = get_current_time_ms();  // Reset timer
-            }
+        if (!state->subscriptions_complete) {
+            SLEEP_MS(1000);  // Delay watchdog until subs are done
+            continue;
         }
 
-        SLEEP_MS(5000);  // Check every 5 seconds
+        unsigned long now = get_current_time_ms();
+        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 60000) {
+            LOG_WS("⚠️ No ping received in 60s, rebooting program...\n");
+            exit(42);
+        }
+
+        SLEEP_MS(5000);
     }
     return 0;
 }
+
 /* ----------------------------- Signal Handling -----------------------------
  */
 volatile sig_atomic_t shutdown_flag = 0;
