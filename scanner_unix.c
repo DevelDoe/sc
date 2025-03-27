@@ -867,20 +867,20 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
     while (!state->shutdown_flag) {
         unsigned long now = get_current_time_ms();
 
-        // Check if no ping was received for 30 seconds (valid timestamp)
-        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 30000) {
-            LOG_WS("⚠️ No ping received in 30s, rebooting program...\n");
-            exit(42);  // Use a unique exit code to indicate a reboot is needed
+        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 60000) {
+            LOG_WS("⚠️ No ping received in 60s, attempting to close connection...\n");
 
-            // Proper connection closure for both platforms
             if (state->wsi_local) {
                 lws_set_timeout(state->wsi_local, 1, LWS_TO_KILL_ASYNC);
                 state->wsi_local = NULL;
-                state->last_ping_time = get_current_time_ms();  // Reset timer
+                state->last_ping_time = get_current_time_ms();  // Reset to avoid instant re-trigger
             }
-        }
 
-        SLEEP_MS(5000);  // Check every 5 seconds
+            SLEEP_MS(2000);  // Give some time for graceful close
+
+            LOG_WS("❌ Still unresponsive. Rebooting scanner...\n");
+            exit(42);
+        }
     }
     return 0;
 }
