@@ -531,7 +531,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
                 if (session->sub_index < state->num_symbols) {
                     // Delay next writable callback by 250ms
-                    lws_set_timer_usecs(wsi, 250 * 1000);
+                    lws_set_timer_usecs(wsi, 100 * 1000);
                 }
             }
             break;
