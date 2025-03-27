@@ -476,7 +476,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            LOG_WS("Connected to FINNHUB\n");  // test
+            LOG_WS("Connected to FINNHUB\n");  // testing
             lws_callback_on_writable(wsi);
             break;
 
