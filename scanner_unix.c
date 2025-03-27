@@ -883,9 +883,11 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
             continue;
         }
 
-        unsigned long now = get_current_time_ms();
-        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 60000) {
-            LOG_WS("⚠️ No ping received in 60s, rebooting program...\n");
+        // Grace period: ignore missing pings for 20 seconds after receiving new symbols
+        if ((now - state->last_symbol_update_time) < 20000) {
+            LOG_WS("⏳ Grace period active, skipping watchdog check\n");
+        } else if (state->last_ping_time > 0 && (now - state->last_ping_time) > 60000) {
+            LOG_WS("⚠️ No ping received in 60s (no grace period), rebooting program...\n");
             exit(42);
         }
 
