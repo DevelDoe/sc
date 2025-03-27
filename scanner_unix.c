@@ -465,7 +465,7 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
                     if (sym) {
                         state->symbols[i] = strdup(sym);
-                        LOG_WS("✅ Added new symbol: %s", state->symbols[i]);
+                        LOG_WS("Received %d symbols to subscribe", json_object_array_length(symbols_array));
                     } else {
                         LOG_WS("❌ Failed to retrieve symbol string from JSON");
                     }
