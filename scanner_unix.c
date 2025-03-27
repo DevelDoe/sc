@@ -543,7 +543,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
                 if (session->sub_index < state->num_symbols) {
                     LOG_WS("🕒 Delaying next subscription for 200ms");
-                    lws_set_timer_usecs(wsi, 20000000);  // Schedule next writable in 200ms
+                    lws_set_timer_usecs(wsi, 200000000);  // Schedule next writable in 200ms
                 }
 
                 if (session->sub_index >= state->num_symbols) {
