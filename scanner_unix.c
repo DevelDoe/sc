@@ -287,13 +287,6 @@ static int handle_finnhub_connection(ScannerState *state) {
         return -1;
     }
 
-    // 🔴 Clean up any existing connection first
-    if (state->wsi_finnhub) {
-        LOG_WS("Closing existing Finnhub connection before reconnecting...\n");
-        lws_cancel_service(state->context);  // Force event loop to close old connection
-        state->wsi_finnhub = NULL;
-    }
-
     struct lws_client_connect_info ccinfo = {0};
     ccinfo.context = state->context;
     ccinfo.address = FINNHUB_HOST;
@@ -304,14 +297,16 @@ static int handle_finnhub_connection(ScannerState *state) {
     ccinfo.protocol = "finnhub";
     ccinfo.ssl_connection = LCCSCF_USE_SSL;
 
-    // 🔴 Create new connection
     state->wsi_finnhub = lws_client_connect_via_info(&ccinfo);
     if (!state->wsi_finnhub) {
-        LOG_WS("Failed to initiate Finnhub connection: host=%s, path=%s, errno=%d (%s)\n", FINNHUB_HOST, FINNHUB_PATH, errno, strerror(errno));
+        LOG_WS(
+            "Failed to initiate Finnhub connection: host=%s, path=%s, port=%d, "
+            "errno=%d (%s)\n",
+            FINNHUB_HOST, FINNHUB_PATH, ccinfo.port, errno, strerror(errno));
         return -1;
     }
 
-    LOG_WS("Finnhub connection initiated successfully (new wsi: %p)\n", state->wsi_finnhub);
+    LOG_WS("Finnhub connection initiated successfully\n");
     return 0;
 }
 
@@ -506,16 +501,18 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
 
                 pthread_mutex_unlock(&state->symbols_mutex);
 
-                /// Restart subscriptions on the ACTIVE Finnhub connection
                 if (state->wsi_finnhub) {
                     FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
-                    session->sub_index = 0;                      // Reset subscription counter
-                    lws_set_timer_usecs(state->wsi_finnhub, 1);  // Start timer immediately
-                    LOG_WS("🟢 [%s] Timer RESTARTED for new symbols", state->scanner_id);
-                } else {
-                    LOG_WS("❌ Finnhub connection not active; cannot subscribe");
+                    session->sub_index = 0;
+
+                    pthread_t sub_thread;
+                    if (pthread_create(&sub_thread, NULL, manual_subscribe_thread, state) == 0) {
+                        pthread_detach(sub_thread);
+                        LOG_WS("🟢 [%s] Spawned manual subscription thread", state->scanner_id);
+                    } else {
+                        LOG_WS("❌ Failed to create subscription thread");
+                    }
                 }
-                break;
             }
 
             json_object_put(msg);
@@ -544,11 +541,11 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
             LOG_WS("Connected to Finnhub");
-            state->wsi_finnhub = wsi;     // <-- CRITICAL: Update the active connection
-            lws_set_timer_usecs(wsi, 1);  // Start timer immediately
+            // Start timer loop after connect
+            lws_set_timer_usecs(wsi, 1);  // start immediately
             break;
 
-        case LWS_CALLBACK_TIMER:
+        case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (session->sub_index < state->num_symbols) {
                 pthread_mutex_lock(&state->symbols_mutex);
 
@@ -567,18 +564,11 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 session->sub_index++;
                 pthread_mutex_unlock(&state->symbols_mutex);
 
-                session->sub_index++;
-                if (session->sub_index < state->num_symbols) {
-                    lws_set_timer_usecs(wsi, 200000);  // Schedule next in 200ms
-                } else {
+                if (session->sub_index >= state->num_symbols) {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active");
                 }
             }
-            break;
-
-        case LWS_CALLBACK_CLIENT_WRITEABLE:
-            // Leave this empty now or just log
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
@@ -931,6 +921,21 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
         SLEEP_MS(5000);
     }
     return 0;
+}
+
+THREAD_FUNC manual_subscribe_thread(void *arg) {
+    ScannerState *state = (ScannerState *)arg;
+
+    while (!state->shutdown_flag) {
+        FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
+
+        if (!session || session->sub_index >= state->num_symbols) break;
+
+        lws_callback_on_writable(state->wsi_finnhub);  // Triggers CLIENT_WRITEABLE
+        usleep(2000000);                               // 200ms delay between each
+    }
+
+    return NULL;
 }
 
 /* ----------------------------- Signal Handling -----------------------------
