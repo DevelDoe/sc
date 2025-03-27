@@ -230,6 +230,7 @@ static void initialize_state(ScannerState *state) {
     info.gid = -1;
     info.uid = -1;
     info.options = 0;
+    info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;  // ✅ ADD THIS LINE
 
     state->context = lws_create_context(&info);
     if (!state->context) {
