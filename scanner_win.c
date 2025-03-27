@@ -471,6 +471,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
     FinnhubSession *session = (FinnhubSession *)user;
     ScannerState *state = (ScannerState *)lws_context_user(lws_get_context(wsi));
 
+    LOG_WS("Finnhub callback reason: %d\n", reason);
+
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
             LOG_WS("Connected to Finnhub\n");
@@ -479,6 +481,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (session->sub_index < state->num_symbols) {
+                LOG_WS("Total symbols to subscribe: %d\n", state->num_symbols);
+
                 char subscribe_msg[128];
 
                 pthread_mutex_lock(&state->symbols_mutex);
