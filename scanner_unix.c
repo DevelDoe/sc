@@ -433,7 +433,9 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 // ✅ Log received symbols
                 LOG_WS("Received %d symbols to subscribe", json_object_array_length(symbols_array));
 
-                if (state->wsi_finnhub) {
+                if (state->wsi_finnhub && state->num_symbols > 0) {
+                    LOG_WS("Unsubscribing from %d old symbols...", state->num_symbols);
+
                     for (int i = 0; i < state->num_symbols; i++) {
                         char unsubscribe_msg[128];
                         snprintf(unsubscribe_msg, sizeof(unsubscribe_msg), "{\"type\":\"unsubscribe\",\"symbol\":\"%s\"}", state->symbols[i]);
@@ -443,11 +445,8 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                         size_t msg_len = strlen(unsubscribe_msg);
                         memcpy(p, unsubscribe_msg, msg_len);
 
-                        if (lws_write(state->wsi_finnhub, p, msg_len, LWS_WRITE_TEXT) < 0) {
-                            LOG_WS("❌ Failed to unsubscribe from: %s", unsubscribe_msg);
-                        } else {
-                            LOG_WS("✅ Unsubscribed from: %s", unsubscribe_msg);
-                        }
+                        lws_write(state->wsi_finnhub, p, msg_len, LWS_WRITE_TEXT);
+                        // No per-symbol log here
                     }
                 }
 
