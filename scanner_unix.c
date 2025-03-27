@@ -162,8 +162,6 @@ typedef struct {
     int sub_index;
 } FinnhubSession;
 
-LOG_WS("LWS version: %s", lws_get_library_version());
-
 /* ----------------------------- Queue Functions ---------------------------- */
 // TradeQueue functions
 static int trade_queue_empty(TradeQueue *q) { return q->head == q->tail; }
@@ -956,6 +954,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s {scanner_id}\n", argv[0]);
         return 1;
     }
+
+    LOG_WS("LWS version: %s", lws_get_library_version());
 
     const char *scanner_id = argv[1];
 
