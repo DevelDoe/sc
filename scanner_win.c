@@ -482,7 +482,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (session->sub_index < state->num_symbols) {
-                LOG_WS("Total symbols to subscribe: %d\n", state->num_symbols);
+                LOG_WS("Total symbols to subscribe: %d\n", state->num_symbols);  // sftgsgf
 
                 char subscribe_msg[128];
 
