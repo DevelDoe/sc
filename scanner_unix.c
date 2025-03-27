@@ -537,7 +537,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 unsigned char *p = &buf[LWS_PRE];
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
-                lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);  // update
+                lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
                 session->sub_index++;
 
