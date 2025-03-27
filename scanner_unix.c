@@ -162,8 +162,6 @@ typedef struct {
     int sub_index;
 } FinnhubSession;
 
-// stsghrt
-
 /* ----------------------------- Queue Functions ---------------------------- */
 // TradeQueue functions
 static int trade_queue_empty(TradeQueue *q) { return q->head == q->tail; }
@@ -529,6 +527,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 pthread_mutex_lock(&state->symbols_mutex);
                 if (session->sub_index < state->num_symbols) {
                     snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
+
                     LOG_WS("📡 [%s] Subscribing to symbol %d/%d: %s", state->scanner_id, session->sub_index + 1, state->num_symbols, state->symbols[session->sub_index]);
                 }
                 pthread_mutex_unlock(&state->symbols_mutex);
@@ -537,15 +536,17 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 unsigned char *p = &buf[LWS_PRE];
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
-                lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);  // sdfg
+                lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
+                LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
 
                 if (session->sub_index < state->num_symbols) {
-                    LOG_WS("🟢 [%s] Setting timer for next subscription (index %d)", state->scanner_id, session->sub_index);
-                    // Delay next subscription by 50ms
-                    lws_set_timer_usecs(wsi, 500000);
-                } else {
+                    LOG_WS("🕒 Delaying next subscription for 200ms");
+                    lws_set_timer_usecs(wsi, 200000);  // Schedule next writable in 200ms
+                }
+
+                if (session->sub_index >= state->num_symbols) {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active\n");
                 }
