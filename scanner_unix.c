@@ -932,7 +932,7 @@ THREAD_FUNC manual_subscribe_thread(void *arg) {
         if (!session || session->sub_index >= state->num_symbols) break;
 
         lws_callback_on_writable(state->wsi_finnhub);  // Triggers CLIENT_WRITEABLE
-        usleep(2000000);                               // 200ms delay between each
+        usleep(1000000);                               // 200ms delay between each
     }
 
     return NULL;
