@@ -1,6 +1,5 @@
 #include <json-c/json.h>
 #include <libwebsockets.h>
-#include <libwebsockets/lws-vhost.h>  // for lws_vhost_creation_info
 #include <math.h>
 #include <pthread.h>
 #include <signal.h>
