@@ -514,21 +514,31 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (session->sub_index < state->num_symbols) {
                 char subscribe_msg[128];
+
                 pthread_mutex_lock(&state->symbols_mutex);
-                if (session->sub_index < state->num_symbols) {
-                    snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
-                }
+                const char *symbol = state->symbols[session->sub_index];
+                snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", symbol);
                 pthread_mutex_unlock(&state->symbols_mutex);
+
                 unsigned char buf[LWS_PRE + 128];
                 unsigned char *p = &buf[LWS_PRE];
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
-                LOG_WS("Subscribed to: %s\n", subscribe_msg);
-                LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
+
+                LOG_WS("Subscribed to: %s (%d/%d)\n", symbol, session->sub_index + 1, state->num_symbols);
                 session->sub_index++;
-                if (session->sub_index < state->num_symbols) lws_callback_on_writable(wsi);
+
+                if (session->sub_index < state->num_symbols) {
+                    // Delay next writable callback by 250ms
+                    lws_set_timer_usecs(wsi, 250 * 1000);
+                }
             }
+            break;
+
+        case LWS_CALLBACK_TIMER:
+            // Trigger next subscription step
+            lws_callback_on_writable(wsi);
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
