@@ -224,34 +224,19 @@ static void initialize_state(ScannerState *state) {
     state->last_ping_time = get_current_time_ms();
     state->last_symbol_update_time = get_current_time_ms();
 
-    // ✅ Set up LWS context
     struct lws_context_creation_info info = {0};
-    info.port = CONTEXT_PORT_NO_LISTEN;  // We're not a server
-    info.protocols = protocols;          // enables timers
+    info.port = CONTEXT_PORT_NO_LISTEN;
+    info.protocols = protocols;
     info.gid = -1;
     info.uid = -1;
     info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
-    struct lws_context *context = lws_create_context(&info);
-    if (!context) {
+    state->context = lws_create_context(&info);
+    if (!state->context) {
         LOG_WS("❌ Failed to create LWS context!");
         exit(1);
-    }
-    state->context = context;
-
-    // ✅ Create a default vhost manually (needed for timers)
-    struct lws_vhost_creation_info vhost_info;
-    memset(&vhost_info, 0, sizeof(vhost_info));
-    vhost_info.port = CONTEXT_PORT_NO_LISTEN;
-    vhost_info.protocols = protocols;
-    vhost_info.name = "default";
-
-    struct lws_vhost *vhost = lws_create_vhost(context, &vhost_info);
-    if (!vhost) {
-        LOG_WS("❌ Failed to create vhost!");
-        exit(1);
     } else {
-        LOG_WS("✅ LWS vhost created — timers now work properly!");
+        LOG_WS("✅ LWS context created — timers should now work");
     }
 }
 
