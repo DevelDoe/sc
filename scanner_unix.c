@@ -461,11 +461,12 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 state->num_symbols = json_object_array_length(symbols_array);
                 if (state->num_symbols > MAX_SYMBOLS) state->num_symbols = MAX_SYMBOLS;
 
+                LOG_WS("Received %d symbols to subscribe", state->num_symbols);  // ✅ Log only once
+
                 for (int i = 0; i < state->num_symbols; i++) {
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
                     if (sym) {
                         state->symbols[i] = strdup(sym);
-                        LOG_WS("Received %d symbols to subscribe", json_object_array_length(symbols_array));
                     } else {
                         LOG_WS("❌ Failed to retrieve symbol string from JSON");
                     }
