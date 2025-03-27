@@ -523,14 +523,15 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (session->sub_index < state->num_symbols) {
-                char subscribe_msg[128];
                 pthread_mutex_lock(&state->symbols_mutex);
-                if (session->sub_index < state->num_symbols) {
-                    snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
 
-                    LOG_WS("📡 [%s] Subscribing to symbol %d/%d: %s", state->scanner_id, session->sub_index + 1, state->num_symbols, state->symbols[session->sub_index]);
-                }
+                const char *symbol = state->symbols[session->sub_index];
+                char subscribe_msg[128];
+                snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", symbol);
+
                 pthread_mutex_unlock(&state->symbols_mutex);
+
+                LOG_WS("📡 [%s] Subscribing to %d/%d: %s", state->scanner_id, session->sub_index + 1, state->num_symbols, symbol);
 
                 unsigned char buf[LWS_PRE + 128];
                 unsigned char *p = &buf[LWS_PRE];
@@ -538,19 +539,22 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
-                LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
 
+                // ✅ Delay next subscription using timer
                 if (session->sub_index < state->num_symbols) {
-                    LOG_WS("🕒 Delaying next subscription for 200ms");
-                    lws_set_timer_usecs(wsi, 200000000);  // Schedule next writable in 200ms
-                }
-
-                if (session->sub_index >= state->num_symbols) {
+                    LOG_WS("🕒 Setting timer for next subscription...");
+                    lws_set_timer_usecs(wsi, 200000);  // 200ms
+                } else {
                     state->subscriptions_complete = 1;
-                    LOG_WS("✅ All subscriptions complete, watchdog is now active\n");
+                    LOG_WS("✅ All subscriptions complete, watchdog is now active");
                 }
             }
+            break;
+
+        case LWS_CALLBACK_TIMER:
+            LOG_WS("⏱️ Timer fired — requesting writable callback");
+            lws_callback_on_writable(wsi);
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
@@ -607,11 +611,6 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
         case LWS_CALLBACK_CLOSED:
             LOG_WS("Finnhub connection closed\n");
             handle_finnhub_connection(state);
-            break;
-
-        case LWS_CALLBACK_TIMER:
-            LOG_WS("⏱️ Timer fired — requesting writable callback to send next subscription");
-            lws_callback_on_writable(wsi);
             break;
 
         default:
