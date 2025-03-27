@@ -54,6 +54,10 @@ unsigned long get_current_time_ms() {
 #define MIN_TRADE_VOLUME 1          // Ignore individual trades below this volume
 #define MIN_CUMULATIVE_VOLUME 5000  // Only trigger alerts if cumulative volume is above this threshold
 
+#ifndef LWS_USEC_PER_MSEC
+#define LWS_USEC_PER_MSEC 1000
+#endif
+
 /* ----------------------------- LOGGING ------------------------------ */
 #define LOG(fmt, ...) \
     if (CLEANER_MODE == 0) printf("[%s] " fmt, __func__, ##__VA_ARGS__)
@@ -137,6 +141,8 @@ typedef struct {
 
     // ✅ NEW: Track last received ping timestamp
     unsigned long last_ping_time;
+
+    FinnhubSession finnhub_session;  // ✅ Add this line
 
 } ScannerState;
 
@@ -476,8 +482,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 char subscribe_msg[128];
 
                 pthread_mutex_lock(&state->symbols_mutex);
-                const char *symbol = state->symbols[session->sub_index];
-                snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", symbol);
+                snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
                 pthread_mutex_unlock(&state->symbols_mutex);
 
                 unsigned char buf[LWS_PRE + 128];
@@ -486,18 +491,17 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
-                LOG_WS("Subscribed to: %s\n", symbol);
+                LOG_WS("Subscribed to: %s\n", subscribe_msg);
                 session->sub_index++;
 
-                // Schedule next write after 200ms only if we have more symbols
                 if (session->sub_index < state->num_symbols) {
-                    lws_set_timer_usecs(wsi, 200 * LWS_USEC_PER_MSEC);
+                    lws_set_timer_usecs(wsi, 250 * LWS_USEC_PER_MSEC);  // 🕒 Delay next subscribe by 250ms
                 }
             }
             break;
 
         case LWS_CALLBACK_TIMER:
-            lws_callback_on_writable(wsi);  // This triggers the next symbol subscription
+            lws_callback_on_writable(wsi);  // 🔁 Triggers next subscription step
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
