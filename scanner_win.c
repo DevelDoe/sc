@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>  // For gettimeofday
 #include <time.h>
 #include <windows.h>
 #ifdef _WIN32
@@ -496,12 +497,23 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
-                time_t now = time(NULL);
-                LOG_WS("[%ld] Subscribed to: %s (%d/%d)\n", now, symbol, session->sub_index, state->num_symbols);
+                // ⏱ Log the time between subscriptions
+                static struct timeval last_time = {0};
+                struct timeval now;
+                gettimeofday(&now, NULL);
+
+                if (last_time.tv_sec != 0) {
+                    long delta_ms = (now.tv_sec - last_time.tv_sec) * 1000 + (now.tv_usec - last_time.tv_usec) / 1000;
+                    LOG_WS("🕒 Time since last sub: %ld ms\n", delta_ms);
+                } else {
+                    LOG_WS("🕒 First subscription\n");
+                }
+
+                last_time = now;
+
+                LOG_WS("Subscribed to: %s (%d/%d)\n", symbol, session->sub_index + 1, state->num_symbols);
                 session->sub_index++;
 
-                // ❗DO NOT call lws_callback_on_writable here again
-                // Instead, schedule a timer to throttle the next write
                 if (session->sub_index < state->num_symbols) {
                     lws_set_timer_usecs(wsi, 250 * 1000);  // 250ms delay
                 }
