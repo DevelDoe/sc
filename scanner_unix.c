@@ -573,11 +573,6 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             lws_callback_on_writable(wsi);
             break;
 
-        case LWS_CALLBACK_TIMER:
-            LOG_WS("⏱️ Timer fired — requesting writable callback");
-            lws_callback_on_writable(wsi);
-            break;
-
         case LWS_CALLBACK_CLIENT_RECEIVE: {
             // Ignore ping messages
             if (len == 4 && strncmp((char *)in, "ping", 4) == 0) {
