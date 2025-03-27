@@ -496,7 +496,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
-                LOG_WS("Subscribed to: %s (%d/%d)\n", symbol, session->sub_index + 1, state->num_symbols);
+                time_t now = time(NULL);
+                LOG_WS("[%ld] Subscribed to: %s (%d/%d)\n", now, symbol, session->sub_index, state->num_symbols);
                 session->sub_index++;
 
                 // ❗DO NOT call lws_callback_on_writable here again
