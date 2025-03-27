@@ -505,8 +505,8 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 if (state->wsi_finnhub) {
                     FinnhubSession *session = (FinnhubSession *)lws_wsi_user(state->wsi_finnhub);
                     session->sub_index = 0;
-                    lws_callback_on_writable(state->wsi_finnhub);
-                    LOG_WS("🟢 [%s] Initial trigger: lws_callback_on_writable()", state->scanner_id);
+                    lws_set_timer_usecs(state->wsi_finnhub, 1);  // Trigger the timer immediately
+                    LOG_WS("🟢 [%s] Restarted subscription timer for new symbols", state->scanner_id);
                 }
             }
 
@@ -559,6 +559,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 session->sub_index++;
                 pthread_mutex_unlock(&state->symbols_mutex);
 
+                session->sub_index++;
                 if (session->sub_index < state->num_symbols) {
                     lws_set_timer_usecs(wsi, 200000);  // Schedule next in 200ms
                 } else {
