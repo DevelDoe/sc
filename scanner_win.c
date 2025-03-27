@@ -250,15 +250,21 @@ static int handle_finnhub_connection(ScannerState *state) {
         return -1;
     }
 
+    // Reset the subscription index for a fresh connection
+    memset(&state->finnhub_session, 0, sizeof(FinnhubSession));
+
     struct lws_client_connect_info ccinfo = {0};
     ccinfo.context = state->context;
     ccinfo.address = "ws.finnhub.io";
     ccinfo.port = 443;
-    ccinfo.path = "/?token=crhlrm9r01qjv9rl4bhgcrhlrm9r01qjv9rl4bi0";  // Replace with your token
+    ccinfo.path = "/?token=crhlrm9r01qjv9rl4bhgcrhlrm9r01qjv9rl4bi0";
     ccinfo.host = ccinfo.address;
     ccinfo.origin = ccinfo.address;
     ccinfo.protocol = "finnhub";
     ccinfo.ssl_connection = LCCSCF_USE_SSL;
+
+    // Important: Assign the session pointer here so it’s passed to the callback
+    ccinfo.userdata = &state->finnhub_session;
 
     state->wsi_finnhub = lws_client_connect_via_info(&ccinfo);
     if (!state->wsi_finnhub) {
@@ -468,21 +474,30 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             if (session->sub_index < state->num_symbols) {
                 char subscribe_msg[128];
+
                 pthread_mutex_lock(&state->symbols_mutex);
-                if (session->sub_index < state->num_symbols) {
-                    snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
-                }
+                const char *symbol = state->symbols[session->sub_index];
+                snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", symbol);
                 pthread_mutex_unlock(&state->symbols_mutex);
+
                 unsigned char buf[LWS_PRE + 128];
                 unsigned char *p = &buf[LWS_PRE];
                 size_t msg_len = strlen(subscribe_msg);
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
-                LOG_WS("Subscribed to: %s\n", subscribe_msg);
-                LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
+
+                LOG_WS("Subscribed to: %s\n", symbol);
                 session->sub_index++;
-                if (session->sub_index < state->num_symbols) lws_callback_on_writable(wsi);
+
+                // Schedule next write after 200ms only if we have more symbols
+                if (session->sub_index < state->num_symbols) {
+                    lws_set_timer_usecs(wsi, 200 * LWS_USEC_PER_MSEC);
+                }
             }
+            break;
+
+        case LWS_CALLBACK_TIMER:
+            lws_callback_on_writable(wsi);  // This triggers the next symbol subscription
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
