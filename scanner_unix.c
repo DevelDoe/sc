@@ -550,11 +550,12 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
-            LOG_WS("Connected to Finnhub\n");
-            lws_callback_on_writable(wsi);
+            LOG_WS("Connected to Finnhub");
+            // Start timer loop after connect
+            lws_set_timer_usecs(wsi, 1);  // start immediately
             break;
 
-        case LWS_CALLBACK_CLIENT_WRITEABLE:
+        case LWS_CALLBACK_TIMER:
             if (session->sub_index < state->num_symbols) {
                 pthread_mutex_lock(&state->symbols_mutex);
 
@@ -574,8 +575,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 pthread_mutex_unlock(&state->symbols_mutex);
 
                 if (session->sub_index < state->num_symbols) {
-                    LOG_WS("🕒 Timer scheduled for next symbol in 200ms");
-                    lws_set_timer_usecs(wsi, 200000);  // 200ms
+                    lws_set_timer_usecs(wsi, 200000);  // Schedule next in 200ms
                 } else {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active");
@@ -583,9 +583,8 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
             }
             break;
 
-        case LWS_CALLBACK_TIMER:
-            LOG_WS("⏱️ Timer fired — requesting writable callback");
-            lws_callback_on_writable(wsi);
+        case LWS_CALLBACK_CLIENT_WRITEABLE:
+            // Leave this empty now or just log
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
