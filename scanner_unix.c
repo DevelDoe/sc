@@ -559,13 +559,18 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 pthread_mutex_unlock(&state->symbols_mutex);
 
                 if (session->sub_index < state->num_symbols) {
-                    LOG_WS("🕒 Delaying next subscription by 200ms...");
+                    LOG_WS("🕒 Timer scheduled for next symbol in 200ms");
                     lws_set_timer_usecs(wsi, 200000);  // 200ms
                 } else {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active");
                 }
             }
+            break;
+
+        case LWS_CALLBACK_TIMER:
+            LOG_WS("⏱️ Timer fired — requesting writable callback");
+            lws_callback_on_writable(wsi);
             break;
 
         case LWS_CALLBACK_TIMER:
