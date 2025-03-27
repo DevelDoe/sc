@@ -529,7 +529,6 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 pthread_mutex_lock(&state->symbols_mutex);
                 if (session->sub_index < state->num_symbols) {
                     snprintf(subscribe_msg, sizeof(subscribe_msg), "{\"type\":\"subscribe\",\"symbol\":\"%s\"}", state->symbols[session->sub_index]);
-
                     LOG_WS("📡 [%s] Subscribing to symbol %d/%d: %s", state->scanner_id, session->sub_index + 1, state->num_symbols, state->symbols[session->sub_index]);
                 }
                 pthread_mutex_unlock(&state->symbols_mutex);
@@ -540,15 +539,14 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
                 memcpy(p, subscribe_msg, msg_len);
                 lws_write(wsi, p, msg_len, LWS_WRITE_TEXT);
 
-                LOG_WS("Total symbols subscribed: %d\n", state->num_symbols);
                 session->sub_index++;
 
                 if (session->sub_index < state->num_symbols) {
-                    LOG_WS("🟢 [%s] Requested lws_callback_on_writable (index %d)", state->scanner_id, session->sub_index);
-                    lws_callback_on_writable(wsi);
-                }
-
-                if (session->sub_index >= state->num_symbols) {
+                    // Instead of immediately requesting another writeable callback,
+                    // set a timer to delay the next subscription by 50ms.
+                    LOG_WS("🟢 [%s] Setting timer for next subscription (index %d)", state->scanner_id, session->sub_index);
+                    lws_set_timer_usecs(wsi, 50000);  // Delay of 50,000 microseconds (50ms)
+                } else {
                     state->subscriptions_complete = 1;
                     LOG_WS("✅ All subscriptions complete, watchdog is now active\n");
                 }
