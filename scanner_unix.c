@@ -153,6 +153,7 @@ typedef struct {
     char scanner_id[64];
 
     volatile int subscriptions_complete;
+    unsigned long last_symbol_update_time;
 
 } ScannerState;
 
@@ -217,6 +218,8 @@ static void initialize_state(ScannerState *state) {
     // Initialize alert queue mutex/cond
     pthread_mutex_init(&state->alert_queue.mutex, NULL);
     pthread_cond_init(&state->alert_queue.cond, NULL);
+
+    state->last_symbol_update_time = get_current_time_ms();
 }
 
 static void cleanup_state(ScannerState *state) {
@@ -462,6 +465,10 @@ static int local_server_callback(struct lws *wsi, enum lws_callback_reasons reas
                 // ✅ Update symbols list
                 state->num_symbols = json_object_array_length(symbols_array);
                 if (state->num_symbols > MAX_SYMBOLS) state->num_symbols = MAX_SYMBOLS;
+
+                // ✅ Mark the time we received new symbols (for watchdog grace period)
+                state->last_symbol_update_time = get_current_time_ms();
+                LOG_WS("⏱️ Updated last_symbol_update_time: %lu\n", state->last_symbol_update_time);
 
                 for (int i = 0; i < state->num_symbols; i++) {
                     const char *sym = json_object_get_string(json_object_array_get_idx(symbols_array, i));
