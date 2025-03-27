@@ -162,6 +162,8 @@ typedef struct {
     int sub_index;
 } FinnhubSession;
 
+// stsghrt
+
 /* ----------------------------- Queue Functions ---------------------------- */
 // TradeQueue functions
 static int trade_queue_empty(TradeQueue *q) { return q->head == q->tail; }
