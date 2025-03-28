@@ -42,7 +42,7 @@ unsigned long get_current_time_ms() {
 #define PROCESSING_MODE 1
 #define DEBUG_MODE 0  // Disable normal debug logs
 
-#define MAX_SYMBOLS 50
+#define MAX_SYMBOLS 250
 #define PRICE_MOVEMENT 1.0   // 1% price movement
 #define DEBOUNCE_TIME 5000   // 3 seconds in milliseconds
 #define MAX_TRADES 1000      // Upper limit for active trades to avoid memory overload
