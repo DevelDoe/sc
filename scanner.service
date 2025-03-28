@@ -1,6 +1,7 @@
 [Unit]
 Description=Mom Trader Scanner
 After=network.target
+StartLimitIntervalSec=0  # Move this line here
 
 [Service]
 EnvironmentFile=/opt/scanner/.env
@@ -11,7 +12,6 @@ RestartSec=5
 User=root
 StandardOutput=append:/var/log/scanner.log
 StandardError=append:/var/log/scanner.err
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
