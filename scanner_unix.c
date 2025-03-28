@@ -917,13 +917,14 @@ int main(int argc, char *argv[]) {
     const char *scanner_id = argv[1];  // git
 
     init_config();
+    setvbuf(stdout, NULL, _IOLBF, 0);  // Ensures output is flushed line-by-line
     printf("Using LOCAL_ADDRESS: %s\n", LOCAL_ADDRESS);
     printf("Using FINNHUB_PATH: %s\n", FINNHUB_PATH);
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGSEGV, handle_signal);
-    signal(SIGABRT, handle_signal);
+    signal(SIGABRT, handle_signal);  //
 
     while (!shutdown_flag) {
         ScannerState state;
