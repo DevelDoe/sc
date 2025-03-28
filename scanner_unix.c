@@ -924,7 +924,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGSEGV, handle_signal);
-    signal(SIGABRT, handle_signal);  //
+    signal(SIGABRT, handle_signal);
 
     while (!shutdown_flag) {
         ScannerState state;
