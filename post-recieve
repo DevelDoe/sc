@@ -1,0 +1,41 @@
+#!/bin/bash
+
+LOG_FILE="/tmp/post-receive.log"
+echo "=== Post-receive hook triggered ===" >> $LOG_FILE
+
+DEPLOY_DIR="/opt/scanner"
+
+# Ensure the deploy directory exists
+mkdir -p "$DEPLOY_DIR"
+
+# Get the repository path
+GIT_REPO=$(pwd)
+echo "Repository path: $GIT_REPO" >> $LOG_FILE
+
+# Checkout the latest code into the deployment directory
+echo "Checking out the latest code..." >> $LOG_FILE
+git --work-tree="$DEPLOY_DIR" --git-dir="$GIT_REPO" checkout -f main &>> $LOG_FILE
+
+# Change to the deployment directory
+cd "$DEPLOY_DIR" || exit
+echo "Changed directory to $DEPLOY_DIR" >> $LOG_FILE
+
+# Compile the scanner
+echo "Compiling scanner..." >> $LOG_FILE
+gcc -o scanner_unix scanner_unix.c -ljson-c -lwebsockets -lpthread -lm &>> $LOG_FILE
+
+# Ensure the binary is executable
+chmod +x scanner_unix
+echo "Scanner compiled successfully" >> $LOG_FILE
+
+echo "Installing systemd service..." >> $LOG_FILE
+cp scanner.service /etc/systemd/system/scanner.service
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl enable scanner.service
+
+# Restart the scanner service
+echo "Restarting scanner service..." >> $LOG_FILE
+systemctl restart scanner.service &>> $LOG_FILE
+
+echo "=== Post-receive hook completed ===" >> $LOG_FILE
