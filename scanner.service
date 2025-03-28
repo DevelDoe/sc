@@ -9,8 +9,8 @@ WorkingDirectory=/opt/scanner
 Restart=on-failure
 RestartSec=5
 User=root
-StandardOutput=append:/var/log/scanner.log
-StandardError=append:/var/log/scanner.err
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
