@@ -914,7 +914,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    const char *scanner_id = argv[1];
+    const char *scanner_id = argv[1];  // git
 
     init_config();
     printf("Using LOCAL_ADDRESS: %s\n", LOCAL_ADDRESS);
