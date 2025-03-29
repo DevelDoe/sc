@@ -531,7 +531,7 @@ static int finnhub_callback(struct lws *wsi, enum lws_callback_reasons reason, v
 
                 if (session->sub_index < state->num_symbols) {
                     // Delay next writable callback by 250ms
-                    lws_set_timer_usecs(wsi, 100 * 1000);
+                    lws_set_timer_usecs(wsi, 50 * 1000);
                 }
             }
             break;
@@ -878,7 +878,7 @@ THREAD_FUNC connection_watchdog_thread(void *arg) {
         unsigned long now = get_current_time_ms();
 
         // Check if no ping was received for 30 seconds (valid timestamp)
-        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 240000) {
+        if (state->last_ping_time > 0 && (now - state->last_ping_time) > 180000) {
             LOG_WS("⚠️ No ping received in 60s, rebooting program...\n");
             exit(42);  // Use a unique exit code to indicate a reboot is needed
 
